@@ -79,7 +79,7 @@ while True:
         tui.send('\x1bт\r'.encode())  # Russian Alt+N while CLI is active
         tui.wait(lambda: len(records(launches)) == 4)
         tui.send('\x1bч'.encode())  # Russian Alt+X closes only current chat
-        assert not alive(records(launches)[3]['pid'])
+        tui.wait(lambda: not alive(records(launches)[3]['pid']))
         assert alive(records(launches)[0]['pid']) and alive(records(launches)[2]['pid'])
         assert os.waitpid(tui.pid, os.WNOHANG) == (0, 0)
         tui.send(mouse(5,37))  # Former fourth chat is gone from open-session rows
