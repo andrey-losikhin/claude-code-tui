@@ -1,0 +1,9 @@
+Claude Code TUI
+Copyright 2026 Andrey Losikhin
+
+Licensed under the Apache License, Version 2.0.
+
+This project is an independent wrapper around the Claude Code CLI.
+It is not affiliated with or endorsed by Anthropic.
+Claude and Claude Code are trademarks of their respective owners.
+Third-party dependencies retain their own licenses.

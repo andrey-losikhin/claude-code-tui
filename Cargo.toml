@@ -1,0 +1,23 @@
+[package]
+name = "claude-code-tui"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+description = "Terminal session manager for Claude Code CLI"
+license = "Apache-2.0"
+authors = ["Andrey Losikhin"]
+repository = "https://github.com/andrey-losikhin/claude-code-tui"
+homepage = "https://github.com/andrey-losikhin/claude-code-tui"
+readme = "README.md"
+keywords = ["claude", "tui", "terminal", "sessions", "neovim"]
+categories = ["command-line-utilities", "development-tools"]
+publish = false
+
+[dependencies]
+crossterm = "0.29"
+portable-pty = "0.9"
+ratatui = "0.30.2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+vt100 = "0.16.2"
+uuid = { version = "1.26", features = ["v4"] }

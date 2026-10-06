@@ -1,0 +1,16 @@
+/target/
+/.docs/
+*.log
+.env
+.env.*
+!.env.example
+
+# Local planning history; public documentation uses lowercase filenames.
+/docs/PROGRESS.md
+/docs/PLAN.md
+/docs/DECISIONS.md
+/docs/ARCHITECTURE.md
+/docs/EXECPLAN-*.md
+__pycache__/
+*.py[cod]
+.DS_Store

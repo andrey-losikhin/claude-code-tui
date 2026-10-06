@@ -1,0 +1,41 @@
+name: Bug report
+description: Report a reproducible problem using synthetic data.
+title: "[Bug]: "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: Do not include real conversations, notes, account files, credentials or private paths. Security reports must be private.
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: TUI revision, Linux distribution, terminal, Claude CLI version, Neovim version and keyboard layout.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: Use a disposable project and synthetic conversation.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+    validations:
+      required: true
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: Before submitting
+      options:
+        - label: I searched existing issues and removed private information.
+          required: true
