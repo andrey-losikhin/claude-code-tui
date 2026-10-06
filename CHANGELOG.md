@@ -5,6 +5,13 @@ format. Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+### Fixed
+
+- New chats enter their project group in activity order immediately.
+- Native renaming before the first prompt updates open chats and survives restart
+  using the saved session-to-directory mapping, even when history has no cwd yet.
+- Project metadata is recognized after large startup records.
+
 ### Added
 
 - Initial public pre-1.0 source distribution (Cargo package version 0.1.0).

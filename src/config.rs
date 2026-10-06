@@ -10,6 +10,8 @@ pub struct UserConfig {
     #[serde(default)]
     pub projects: BTreeSet<PathBuf>,
     #[serde(default)]
+    pub session_projects: HashMap<String, PathBuf>,
+    #[serde(default)]
     pub hidden_projects: HashSet<PathBuf>,
     #[serde(default)]
     pub collapsed_projects: HashSet<PathBuf>,

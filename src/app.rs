@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use crossterm::event::KeyCode;
@@ -115,8 +115,22 @@ impl App {
                 SidebarRow::Project(path) => Some(path.clone()),
                 SidebarRow::Session(_) => None,
             });
+        let mut project_hints: HashMap<String, PathBuf> = self.config.session_projects.clone();
+        for session in &self.sessions {
+            project_hints.insert(session.id.clone(), session.project_path.clone());
+        }
+        let mut mapping_changed = false;
+        for running in open {
+            project_hints.insert(running.id.clone(), running.project_path.clone());
+            if self.config.session_projects.get(&running.id) != Some(&running.project_path) {
+                self.config
+                    .session_projects
+                    .insert(running.id.clone(), running.project_path.clone());
+                mapping_changed = true;
+            }
+        }
         let (mut sessions, status) = match sessions::default_history_path() {
-            Some(path) => match sessions::scan_history(&path) {
+            Some(path) => match sessions::scan_history(&path, &project_hints) {
                 Ok(result) => {
                     let mut status = format!("{} чатов", result.sessions.len());
                     if result.unreadable_files > 0 {
@@ -153,6 +167,13 @@ impl App {
                 });
             }
         }
+        sessions.sort_by(|left, right| {
+            right
+                .updated_at
+                .cmp(&left.updated_at)
+                .then_with(|| left.project_path.cmp(&right.project_path))
+                .then_with(|| left.id.cmp(&right.id))
+        });
         let mut renamed_in_cli = false;
         for session in &sessions {
             if session.custom_title.is_some()
@@ -165,7 +186,7 @@ impl App {
                 renamed_in_cli |= self.config.renamed_sessions.remove(&session.id).is_some();
             }
         }
-        if renamed_in_cli {
+        if renamed_in_cli || mapping_changed {
             self.save_config();
         }
         let unchanged = self.sessions.len() == sessions.len()
@@ -376,11 +397,15 @@ impl App {
         }
 
         for indices in groups.values_mut() {
-            indices.sort_by_key(|index| {
-                !self
-                    .sessions
-                    .get(*index)
-                    .is_some_and(|session| self.config.pinned_sessions.contains(&session.id))
+            indices.sort_by(|left, right| {
+                let left = &self.sessions[*left];
+                let right = &self.sessions[*right];
+                self.config
+                    .pinned_sessions
+                    .contains(&right.id)
+                    .cmp(&self.config.pinned_sessions.contains(&left.id))
+                    .then_with(|| right.updated_at.cmp(&left.updated_at))
+                    .then_with(|| left.id.cmp(&right.id))
             });
         }
 

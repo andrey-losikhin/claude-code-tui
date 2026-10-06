@@ -1,12 +1,9 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::fs;
-use std::io::{self, BufRead, Read, Seek};
+use std::io::{self, BufRead};
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
-
-const MAX_HEADER_BYTES: u64 = 64 * 1024;
-const MAX_HEADER_LINES: usize = 32;
 
 #[derive(Clone, Debug)]
 pub struct Session {
@@ -18,7 +15,7 @@ pub struct Session {
     pub updated_at: SystemTime,
 }
 
-type CachedSession = (u64, SystemTime, Option<Session>);
+type CachedSession = (u64, SystemTime, Option<PathBuf>, Option<Session>);
 thread_local! {
     static HISTORY_CACHE: RefCell<HashMap<PathBuf, CachedSession>> = RefCell::new(HashMap::new());
 }
@@ -33,13 +30,16 @@ pub fn default_history_path() -> Option<PathBuf> {
     std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".claude/projects"))
 }
 
-pub fn scan_history(root: &Path) -> io::Result<ScanResult> {
+pub fn scan_history(
+    root: &Path,
+    project_hints: &HashMap<String, PathBuf>,
+) -> io::Result<ScanResult> {
     if !root.exists() {
         return Ok(ScanResult::default());
     }
 
     let mut result = ScanResult::default();
-    scan_directory(root, &mut result);
+    scan_directory(root, &mut result, project_hints);
     let mut unique_sessions = HashMap::new();
     for session in result.sessions.drain(..) {
         match unique_sessions.entry(session.id.clone()) {
@@ -72,7 +72,11 @@ fn session_is_newer(candidate: &Session, current: &Session) -> bool {
                 < (current.project_path.as_os_str(), current.id.as_str()))
 }
 
-fn scan_directory(directory: &Path, result: &mut ScanResult) {
+fn scan_directory(
+    directory: &Path,
+    result: &mut ScanResult,
+    project_hints: &HashMap<String, PathBuf>,
+) {
     let entries = match fs::read_dir(directory) {
         Ok(entries) => entries,
         Err(_) => {
@@ -101,7 +105,7 @@ fn scan_directory(directory: &Path, result: &mut ScanResult) {
 
         if file_type.is_dir() {
             if entry.file_name() != "subagents" {
-                scan_directory(&path, result);
+                scan_directory(&path, result, project_hints);
             }
             continue;
         }
@@ -110,7 +114,12 @@ fn scan_directory(directory: &Path, result: &mut ScanResult) {
             continue;
         }
 
-        match read_session(&path) {
+        let hint = path
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .and_then(|id| project_hints.get(id))
+            .map(PathBuf::as_path);
+        match read_session(&path, hint) {
             Ok(Some(session)) => result.sessions.push(session),
             Ok(None) => {}
             Err(_) => result.unreadable_files += 1,
@@ -118,79 +127,42 @@ fn scan_directory(directory: &Path, result: &mut ScanResult) {
     }
 }
 
-fn read_session(path: &Path) -> io::Result<Option<Session>> {
-    let mut file = fs::File::open(path)?;
+fn read_session(path: &Path, project_hint: Option<&Path>) -> io::Result<Option<Session>> {
+    let file = fs::File::open(path)?;
     let metadata = file.metadata()?;
     let updated_at = metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH);
     if let Some(cached) = HISTORY_CACHE.with(|cache| {
         cache
             .borrow()
             .get(path)
-            .filter(|(size, modified, _)| *size == metadata.len() && *modified == updated_at)
-            .map(|(_, _, session)| session.clone())
+            .filter(|(size, modified, hint, _)| {
+                *size == metadata.len()
+                    && *modified == updated_at
+                    && hint.as_deref() == project_hint
+            })
+            .map(|(_, _, _, session)| session.clone())
     }) {
         return Ok(cached);
     }
-    let limited = (&mut file).take(MAX_HEADER_BYTES);
-    let reader = io::BufReader::new(limited);
-    let mut id = path
+    let id = path
         .file_stem()
         .and_then(|stem| stem.to_str())
         .unwrap_or_default()
         .to_owned();
     let mut project_path = None;
     let mut title = None;
-    let mut git_branch = None;
-
-    for line in reader.lines().take(MAX_HEADER_LINES) {
-        let line = line?;
-        let Ok(record) = serde_json::from_str::<serde_json::Value>(&line) else {
-            continue;
-        };
-
-        if let Some(value) = record.get("sessionId").and_then(serde_json::Value::as_str)
-            && !value.is_empty()
-        {
-            id = value.to_owned();
-        }
-        if project_path.is_none() {
-            project_path = record
-                .get("cwd")
-                .and_then(serde_json::Value::as_str)
-                .filter(|value| !value.is_empty())
-                .map(PathBuf::from);
-        }
-        if title.is_none() {
-            title = record
-                .get("aiTitle")
-                .and_then(serde_json::Value::as_str)
-                .filter(|value| !value.is_empty())
-                .or_else(|| {
-                    record
-                        .get("slug")
-                        .and_then(serde_json::Value::as_str)
-                        .filter(|value| !value.is_empty())
-                })
-                .map(str::to_owned);
-        }
-        if git_branch.is_none() {
-            git_branch = record
-                .get("gitBranch")
-                .and_then(serde_json::Value::as_str)
-                .filter(|value| !value.is_empty())
-                .map(str::to_owned);
-        }
-    }
-
-    let Some(project_path) = project_path else {
-        return Ok(None);
-    };
-    // /rename appends metadata anywhere in the transcript. The last title wins.
-    file.rewind()?;
     let mut custom_title = None;
+    let mut git_branch = None;
+    // Claude can write only /rename metadata before a first prompt, or place cwd
+    // after large startup records. Read metadata throughout the file, not a header.
     for line in io::BufReader::new(file).lines() {
         let line = line?;
-        if !line.contains("\"customTitle\"") && !line.contains("\"aiTitle\"") {
+        if !line.contains("\"customTitle\"")
+            && !line.contains("\"aiTitle\"")
+            && !(project_path.is_none() && line.contains("\"cwd\""))
+            && !(title.is_none() && line.contains("\"slug\""))
+            && !(git_branch.is_none() && line.contains("\"gitBranch\""))
+        {
             continue;
         }
         let Ok(record) = serde_json::from_str::<serde_json::Value>(&line) else {
@@ -203,33 +175,34 @@ fn read_session(path: &Path) -> io::Result<Option<Session>> {
         {
             continue;
         }
-        if let Some(value) = record
-            .get("customTitle")
-            .and_then(serde_json::Value::as_str)
-            .filter(|value| !value.is_empty())
-        {
+        let field = |key: &str| {
+            record
+                .get(key)
+                .and_then(serde_json::Value::as_str)
+                .filter(|value| !value.is_empty())
+        };
+        if project_path.is_none() {
+            project_path = field("cwd").map(PathBuf::from);
+        }
+        if let Some(value) = field("customTitle") {
             custom_title = Some(value.to_owned());
         }
-        if let Some(value) = record
-            .get("aiTitle")
-            .and_then(serde_json::Value::as_str)
-            .filter(|value| !value.is_empty())
-        {
+        if let Some(value) = field("aiTitle") {
             title = Some(value.to_owned());
+        } else if title.is_none() {
+            title = field("slug").map(str::to_owned);
+        }
+        if git_branch.is_none() {
+            git_branch = field("gitBranch").map(str::to_owned);
         }
     }
-    let fallback_title = path
-        .file_stem()
-        .and_then(|stem| stem.to_str())
-        .unwrap_or("chat");
-
+    let Some(project_path) = project_path.or_else(|| project_hint.map(Path::to_path_buf)) else {
+        return Ok(None);
+    };
     let session = Session {
+        title: custom_title.clone().or(title).unwrap_or_else(|| id.clone()),
         id,
         project_path,
-        title: custom_title
-            .clone()
-            .or(title)
-            .unwrap_or_else(|| fallback_title.to_owned()),
         custom_title,
         git_branch,
         updated_at,
@@ -237,7 +210,12 @@ fn read_session(path: &Path) -> io::Result<Option<Session>> {
     HISTORY_CACHE.with(|cache| {
         cache.borrow_mut().insert(
             path.to_owned(),
-            (metadata.len(), updated_at, Some(session.clone())),
+            (
+                metadata.len(),
+                updated_at,
+                project_hint.map(Path::to_path_buf),
+                Some(session.clone()),
+            ),
         );
     });
     Ok(Some(session))
@@ -247,6 +225,52 @@ fn read_session(path: &Path) -> io::Result<Option<Session>> {
 mod tests {
     use super::*;
     use std::io::Write;
+
+    #[test]
+    fn title_only_history_uses_known_project_and_cache_checks_hint() {
+        let root = std::env::temp_dir().join(format!("claude-new-title-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join("chat.jsonl");
+        fs::write(&path, serde_json::json!({"type":"custom-title","sessionId":"chat","customTitle":"Named before prompt"}).to_string()).unwrap();
+        assert!(read_session(&path, None).unwrap().is_none());
+        let session = read_session(&path, Some(Path::new("/chosen/project")))
+            .unwrap()
+            .unwrap();
+        assert_eq!(session.project_path, Path::new("/chosen/project"));
+        assert_eq!(session.title, "Named before prompt");
+        assert!(read_session(&path, None).unwrap().is_none());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn cwd_after_startup_records_is_read_and_beats_project_hint() {
+        let root = std::env::temp_dir().join(format!("claude-late-cwd-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join("chat.jsonl");
+        let mut file = fs::File::create(&path).unwrap();
+        for _ in 0..40 {
+            writeln!(
+                file,
+                "{}",
+                serde_json::json!({"type":"attachment","text":"x".repeat(2048)})
+            )
+            .unwrap();
+        }
+        writeln!(
+            file,
+            "{}",
+            serde_json::json!({"type":"user","sessionId":"chat","cwd":"/actual/project"})
+        )
+        .unwrap();
+        writeln!(file, "{}", serde_json::json!({"type":"custom-title","sessionId":"chat","customTitle":"Late project"})).unwrap();
+        let session = read_session(&path, Some(Path::new("/fallback/project")))
+            .unwrap()
+            .unwrap();
+        assert_eq!(session.project_path, Path::new("/actual/project"));
+        assert_eq!(session.title, "Late project");
+        drop(file);
+        fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn native_rename_reads_latest_title_after_large_messages_and_invalidates_cache() {
@@ -274,8 +298,8 @@ mod tests {
             serde_json::json!({"type":"custom-title","sessionId":"chat","customTitle":"111"})
         )
         .unwrap();
-        assert_eq!(read_session(&path).unwrap().unwrap().title, "111");
-        assert_eq!(read_session(&path).unwrap().unwrap().title, "111");
+        assert_eq!(read_session(&path, None).unwrap().unwrap().title, "111");
+        assert_eq!(read_session(&path, None).unwrap().unwrap().title, "111");
         writeln!(
             file,
             "{}",
@@ -295,7 +319,7 @@ mod tests {
         )
         .unwrap();
         write!(file, "{{\"customTitle\":").unwrap();
-        let session = read_session(&path).unwrap().unwrap();
+        let session = read_session(&path, None).unwrap().unwrap();
         assert_eq!(session.title, "1111");
         assert_eq!(session.custom_title.as_deref(), Some("1111"));
         drop(file);

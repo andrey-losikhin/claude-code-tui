@@ -20,11 +20,13 @@ while True:
         path=pathlib.Path(os.environ['HOME'])/'.claude/projects/test'/f'{id}.jsonl'
         path.parent.mkdir(parents=True,exist_ok=True)
         path.write_text(json.dumps({'sessionId':id,'cwd':os.getcwd(),'aiTitle':'CLI_ALPHA'})+'\\n')
-    if b't' in data or b'v' in data:
+    if b't' in data or b'v' in data or b'z' in data:
         path=pathlib.Path(os.environ['HOME'])/'.claude/projects/test'/f'{id}.jsonl'
+        path.parent.mkdir(parents=True,exist_ok=True)
         with path.open('a') as f:
             for _ in range(40): f.write(json.dumps({'type':'assistant','message':'x'*2048})+'\\n')
-            f.write(json.dumps({'type':'custom-title','sessionId':id,'customTitle':'CLI_NATIVE1111' if b'v' in data else 'CLI_NATIVE111'})+'\\n')
+            title='TITLE_ONLY_NEW' if b'z' in data else ('CLI_NATIVE1111' if b'v' in data else 'CLI_NATIVE111')
+            f.write(json.dumps({'type':'custom-title','sessionId':id,'customTitle':title})+'\\n')
     if b'\\x03' in data: break
 ''')
     fake.chmod(0o755)
@@ -83,4 +85,33 @@ while True:
         assert alive(records(launches)[1]['pid'])
         tui.send(b'\x1bq'); tui.finish()
         print('PASS: new chat before history, rename in all panels/open-session rename, live history with override, switch/close/resume/native exit, other process survives')
+    finally: tui.cleanup()
+
+    # A fresh chat is sorted before older history and native /rename works even
+    # before Claude writes a cwd/prompt record. Its project survives a cold start.
+    tui=Tui(env)
+    try:
+        count=len(records(launches))
+        tui.send(b'n\r')
+        tui.wait(lambda: len(records(launches))==count+1)
+        fresh=records(launches)[-1]['id']
+        tui.wait(lambda: 'Новый чат' in screen(tui)[2][:48])
+        assert json.loads(config.read_text())['session_projects'][fresh]==str(root/'project')
+        tui.send(b'z')
+        tui.wait(lambda: labels(tui,'TITLE_ONLY_NEW')==(True,True,True))
+        assert 'TITLE_ONLY_NEW' in screen(tui)[2][:48]
+        path=root/'home/.claude/projects/test'/f'{fresh}.jsonl'
+        assert all('cwd' not in json.loads(line) for line in path.read_text().splitlines())
+        tui.send(b'\x1bx')
+        tui.wait(lambda: labels(tui,'TITLE_ONLY_NEW')==(True,False,False))
+        tui.send(b'\x1bq'); tui.finish()
+    finally: tui.cleanup()
+    tui=Tui(env)
+    try:
+        tui.wait(lambda: 'TITLE_ONLY_NEW' in screen(tui)[2][:48])
+        assert str(root/'project') in json.loads(config.read_text())['session_projects'].values()
+        tui.send(b'\x1b[B\r')
+        tui.wait(lambda: labels(tui,'TITLE_ONLY_NEW')==(True,True,True))
+        tui.send(b'\x1bq'); tui.finish()
+        print('PASS: fresh chat sorted within project, title-only native rename in all panels, saved directory mapping, close/restart/resume')
     finally: tui.cleanup()
