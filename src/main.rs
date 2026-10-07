@@ -65,6 +65,7 @@ fn main() -> io::Result<()> {
             app.sync_live_sessions(&processes.open_sessions());
             last_history_refresh = Instant::now();
         }
+        app.poll_history(&processes.open_sessions());
         processes.sync_titles(|id| app.title_for_id(id).map(str::to_owned));
         if notes.sync(processes.active_id()) {
             app.should_quit = true;
@@ -115,7 +116,7 @@ fn main() -> io::Result<()> {
             );
         })?;
 
-        if event::poll(Duration::from_millis(25))? {
+        if event::poll(Duration::from_millis(16))? {
             let input = event::read()?;
             if let Event::Key(key) = &input
                 && matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat)

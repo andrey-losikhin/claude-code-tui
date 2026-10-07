@@ -54,6 +54,8 @@ pub struct App {
     config: UserConfig,
     rename_session_id: Option<String>,
     config_writable: bool,
+    history_scanner: sessions::HistoryScanner,
+    history: Result<sessions::ScanResult, String>,
 }
 
 impl App {
@@ -61,6 +63,13 @@ impl App {
         let (config, config_error) = config::load();
         let config_writable = config_error.is_none();
         let collapsed_projects = config.collapsed_projects.clone();
+        let mut history_scanner = sessions::HistoryScanner::new();
+        let history = match sessions::default_history_path() {
+            Some(root) => history_scanner
+                .initial_scan(root, config.session_projects.clone())
+                .map_err(|error| format!("Не удалось прочитать историю: {error}")),
+            None => Err("Переменная HOME не задана".to_owned()),
+        };
         let mut app = Self {
             should_quit: false,
             focused_panel: FocusPanel::Projects,
@@ -82,6 +91,8 @@ impl App {
             config,
             rename_session_id: None,
             config_writable,
+            history_scanner,
+            history,
         };
         app.reload_sessions();
         if let Some(error) = config_error {
@@ -92,22 +103,43 @@ impl App {
     }
 
     pub fn reload_sessions(&mut self) {
-        self.reload_with_open_sessions(&[], false);
+        self.reload_with_open_sessions(&[], false, true);
     }
 
     pub fn sync_live_sessions(&mut self, open: &[crate::pty::OpenSession]) {
-        self.reload_with_open_sessions(open, true);
+        self.reload_with_open_sessions(open, true, true);
+    }
+
+    pub fn poll_history(&mut self, open: &[crate::pty::OpenSession]) {
+        if self.input_active() {
+            return;
+        }
+        if let Some(result) = self.history_scanner.take_result() {
+            self.history = result.map_err(|error| format!("Не удалось прочитать историю: {error}"));
+            let preserve_status = self.status != "0 чатов";
+            self.reload_with_open_sessions(open, preserve_status, false);
+        }
     }
 
     fn reload_with_open_sessions(
         &mut self,
         open: &[crate::pty::OpenSession],
         preserve_status: bool,
+        request_history: bool,
     ) {
         let active_id = self
             .selected_session
             .and_then(|index| self.sessions.get(index))
             .map(|session| session.id.clone());
+        let selected_chat_id = self
+            .selected_row
+            .and_then(|index| self.rows.get(index))
+            .and_then(|row| match row {
+                SidebarRow::Session(index) => {
+                    self.sessions.get(*index).map(|session| session.id.clone())
+                }
+                SidebarRow::Project(_) => None,
+            });
         let selected_project = self
             .selected_row
             .and_then(|index| self.rows.get(index))
@@ -129,19 +161,22 @@ impl App {
                 mapping_changed = true;
             }
         }
-        let (mut sessions, status) = match sessions::default_history_path() {
-            Some(path) => match sessions::scan_history(&path, &project_hints) {
-                Ok(result) => {
-                    let mut status = format!("{} чатов", result.sessions.len());
-                    if result.unreadable_files > 0 {
-                        status
-                            .push_str(&format!(" · пропущено файлов: {}", result.unreadable_files));
-                    }
-                    (result.sessions, status)
+        if request_history {
+            if let Some(path) = sessions::default_history_path() {
+                self.history_scanner.request(path, project_hints);
+            } else {
+                self.history = Err("Переменная HOME не задана".to_owned());
+            }
+        }
+        let (mut sessions, status) = match &self.history {
+            Ok(result) => {
+                let mut status = format!("{} чатов", result.sessions.len());
+                if result.unreadable_files > 0 {
+                    status.push_str(&format!(" · пропущено файлов: {}", result.unreadable_files));
                 }
-                Err(error) => (Vec::new(), format!("Не удалось прочитать историю: {error}")),
-            },
-            None => (Vec::new(), "Переменная HOME не задана".to_owned()),
+                (result.sessions.clone(), status)
+            }
+            Err(error) => (Vec::new(), error.clone()),
         };
         if preserve_status && status.starts_with("Не удалось") {
             self.status = status;
@@ -210,6 +245,16 @@ impl App {
         self.rows.clear();
         self.selected_row = None;
         self.refresh_rows();
+        if let Some(id) = selected_chat_id {
+            self.selected_row = self
+                .rows
+                .iter()
+                .position(|row| match row {
+                    SidebarRow::Session(index) => self.sessions[*index].id == id,
+                    SidebarRow::Project(_) => false,
+                })
+                .or(self.selected_row);
+        }
         if let Some(path) = selected_project {
             self.selected_row = self
                 .rows

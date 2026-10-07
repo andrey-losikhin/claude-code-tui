@@ -37,6 +37,7 @@ pub struct PtyManager {
     order: Vec<String>,
     active: Option<String>,
     selection: Option<DragSelection>,
+    next_background: usize,
 }
 
 struct DragSelection {
@@ -367,9 +368,45 @@ impl PtyManager {
 
     pub fn drain_output(&mut self) -> bool {
         let mut completed = false;
-        for session in self.sessions.values_mut() {
-            for bytes in session.output.try_iter() {
+        // A busy child must not hold the UI until its queue becomes empty.
+        // Parse the active child first, then rotate background children fairly.
+        let mut ids: Vec<String> = self.active.iter().cloned().collect();
+        let mut background: Vec<String> = self
+            .order
+            .iter()
+            .filter(|id| self.active.as_ref() != Some(*id))
+            .cloned()
+            .collect();
+        if !background.is_empty() {
+            let offset = self.next_background % background.len();
+            background.rotate_left(offset);
+            self.next_background = (offset + 1) % background.len();
+        }
+        ids.extend(background);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(4);
+        for id in ids {
+            let Some(session) = self.sessions.get_mut(&id) else {
+                continue;
+            };
+            // Bounded work also prevents active output from starving hidden PTYs.
+            let session_deadline =
+                deadline.min(std::time::Instant::now() + std::time::Duration::from_millis(2));
+            let chunks = if self.active.as_ref() == Some(&id) {
+                64
+            } else {
+                4
+            };
+            for _ in 0..chunks {
+                if std::time::Instant::now() >= session_deadline {
+                    break;
+                }
+                let Ok(bytes) = session.output.try_recv() else {
+                    break;
+                };
                 session.parser.process(&bytes);
+                if std::time::Instant::now() >= session_deadline {
+                    break;
+                }
             }
             if session.stopped.is_none() {
                 match session.child.try_wait() {
@@ -567,7 +604,7 @@ impl PtyManager {
         let (rows, cols) = screen.size();
         let mut lines = Vec::with_capacity(rows as usize + usize::from(session.stopped.is_some()));
         for row in 0..rows {
-            let mut spans = Vec::with_capacity(cols as usize);
+            let mut spans: Vec<Span<'static>> = Vec::new();
             for col in 0..cols {
                 let Some(cell) = screen.cell(row, col) else {
                     continue;
@@ -576,9 +613,9 @@ impl PtyManager {
                     continue;
                 }
                 let content = if cell.has_contents() {
-                    cell.contents().to_owned()
+                    cell.contents()
                 } else {
-                    " ".to_owned()
+                    " "
                 };
                 let mut style = Style::default()
                     .fg(map_color(cell.fgcolor()))
@@ -612,7 +649,11 @@ impl PtyManager {
                         style.add_modifier(Modifier::REVERSED)
                     };
                 }
-                spans.push(Span::styled(content, style));
+                if let Some(last) = spans.last_mut().filter(|span| span.style == style) {
+                    last.content.to_mut().push_str(content);
+                } else {
+                    spans.push(Span::styled(content.to_owned(), style));
+                }
             }
             lines.push(Line::from(spans));
         }

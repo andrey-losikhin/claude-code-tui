@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 project_root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+source "$project_root/scripts/cargo-build.sh"
 terminal_kind=auto
 build=true
 while [[ $# -gt 0 ]]; do
@@ -23,7 +24,7 @@ case $terminal_kind in
 esac
 command -v python3 >/dev/null || { echo 'Для установки нужен python3' >&2; exit 1; }
 if [[ $build == true ]]; then
-    cargo build --release --manifest-path "$project_root/Cargo.toml" --target-dir "$project_root/target" --locked
+    tui_cargo_build build --release --manifest-path "$project_root/Cargo.toml" --target-dir "$project_root/target" --locked
 fi
 binary="$project_root/target/release/claude-code-tui"
 [[ -x $binary ]] || { echo 'Нет release-сборки; запустите без --no-build' >&2; exit 1; }

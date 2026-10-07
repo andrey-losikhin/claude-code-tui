@@ -26,6 +26,63 @@ pub struct ScanResult {
     pub unreadable_files: usize,
 }
 
+// Keep filesystem work and the history cache on one worker, away from rendering.
+pub struct HistoryScanner {
+    requests: std::sync::mpsc::SyncSender<(PathBuf, HashMap<String, PathBuf>)>,
+    results: std::sync::mpsc::Receiver<io::Result<ScanResult>>,
+    pending: bool,
+}
+
+impl HistoryScanner {
+    pub fn new() -> Self {
+        Self::with_scan(scan_history)
+    }
+
+    fn with_scan(
+        scan: impl Fn(&Path, &HashMap<String, PathBuf>) -> io::Result<ScanResult> + Send + 'static,
+    ) -> Self {
+        let (requests, receiver) =
+            std::sync::mpsc::sync_channel::<(PathBuf, HashMap<String, PathBuf>)>(1);
+        let (sender, results) = std::sync::mpsc::sync_channel(1);
+        std::thread::spawn(move || {
+            while let Ok((root, hints)) = receiver.recv() {
+                if sender.send(scan(&root, &hints)).is_err() {
+                    break;
+                }
+            }
+        });
+        Self {
+            requests,
+            results,
+            pending: false,
+        }
+    }
+
+    // Only before the event loop starts: populate the sidebar using this worker's cache.
+    pub fn initial_scan(
+        &mut self,
+        root: PathBuf,
+        hints: HashMap<String, PathBuf>,
+    ) -> io::Result<ScanResult> {
+        self.request(root, hints);
+        let result = self.results.recv().map_err(io::Error::other)?;
+        self.pending = false;
+        result
+    }
+
+    pub fn request(&mut self, root: PathBuf, hints: HashMap<String, PathBuf>) {
+        if !self.pending && self.requests.try_send((root, hints)).is_ok() {
+            self.pending = true;
+        }
+    }
+
+    pub fn take_result(&mut self) -> Option<io::Result<ScanResult>> {
+        let result = self.results.try_recv().ok()?;
+        self.pending = false;
+        Some(result)
+    }
+}
+
 pub fn default_history_path() -> Option<PathBuf> {
     std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".claude/projects"))
 }
@@ -225,6 +282,34 @@ fn read_session(path: &Path, project_hint: Option<&Path>) -> io::Result<Option<S
 mod tests {
     use super::*;
     use std::io::Write;
+
+    #[test]
+    fn background_scan_does_not_block_or_queue_duplicate_work() {
+        let (started, ready) = std::sync::mpsc::channel();
+        let (release, blocked) = std::sync::mpsc::channel();
+        let mut scanner = HistoryScanner::with_scan(move |_, _| {
+            started.send(()).unwrap();
+            blocked.recv().unwrap();
+            Ok(ScanResult::default())
+        });
+        scanner.request(PathBuf::from("/synthetic"), HashMap::new());
+        ready
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .unwrap();
+        scanner.request(PathBuf::from("/duplicate"), HashMap::new());
+        assert!(scanner.take_result().is_none());
+        release.send(()).unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        loop {
+            if let Some(result) = scanner.take_result() {
+                assert!(result.unwrap().sessions.is_empty());
+                break;
+            }
+            assert!(std::time::Instant::now() < deadline);
+            std::thread::yield_now();
+        }
+        assert!(ready.try_recv().is_err());
+    }
 
     #[test]
     fn title_only_history_uses_known_project_and_cache_checks_hint() {

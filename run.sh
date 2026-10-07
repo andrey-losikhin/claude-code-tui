@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 project_root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+source "$project_root/scripts/cargo-build.sh"
 terminal_kind=auto
 if [[ $# -gt 0 ]]; then
     if [[ $# -eq 2 && $1 == --terminal ]]; then
@@ -30,7 +31,7 @@ case $terminal_kind in
     here) ;;
     *) echo "Неизвестный терминал: $terminal_kind" >&2; exit 2 ;;
 esac
-cargo build --manifest-path "$project_root/Cargo.toml" --target-dir "$project_root/target" --locked
+tui_cargo_build build --manifest-path "$project_root/Cargo.toml" --target-dir "$project_root/target" --locked
 binary="$project_root/target/debug/claude-code-tui"
 case $terminal_kind in
     ghostty)
