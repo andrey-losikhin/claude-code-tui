@@ -3,6 +3,7 @@ from pathlib import Path
 exec((Path(__file__).parent/'support.py').read_text())
 exec((Path(__file__).parent/'screen.py').read_text())
 import subprocess
+import shutil
 
 with tempfile.TemporaryDirectory(prefix='claude-panel-digits-') as directory:
     root=Path(directory)
@@ -85,6 +86,16 @@ os.execv('/usr/bin/nvim',['nvim','--clean','-i','NONE','-n',*sys.argv[1:]])
     print('PASS: Alt+1..4 classic/CSI-u/repeat, active Claude/insert nvim, modal/viewer escape, hidden/maximized panels, unchanged ordinary digits, no child leakage')
 
     # Verify launch arguments without opening real GUI terminals or changing host config.
+    # The installer checks a release path, but the check suite only builds debug.
+    # Keep that fixture isolated rather than relying on a developer's target tree.
+    launcher_repo=root/'launcher-repo'
+    (launcher_repo/'scripts').mkdir(parents=True)
+    for name in ('run.sh','install.sh','scripts/cargo-build.sh'):
+        shutil.copy2(REPO/name,launcher_repo/name)
+    for profile in ('debug','release'):
+        destination=launcher_repo/'target'/profile/'claude-code-tui'
+        destination.parent.mkdir(parents=True)
+        shutil.copy2(BINARY,destination)
     argv=root/'argv'
     for terminal in ('ghostty','kitty'):
         stub=root/'bin'/terminal
@@ -105,9 +116,9 @@ os.execv('/usr/bin/nvim',['nvim','--clean','-i','NONE','-n',*sys.argv[1:]])
                 index=args.index(f'map alt+{digit} send_text all \\x1b{digit}')
                 assert args[index-1]=='-o'
     for terminal in ('ghostty','kitty'):
-        subprocess.run(['bash',str(REPO/'run.sh'),'--terminal',terminal],env=env,check=True,timeout=10)
+        subprocess.run(['bash',str(launcher_repo/'run.sh'),'--terminal',terminal],env=env,check=True,timeout=10)
         assert_args(terminal)
-        subprocess.run(['bash',str(REPO/'install.sh'),'--no-build','--terminal',terminal],env=env,check=True,timeout=10,stdout=subprocess.PIPE)
+        subprocess.run(['bash',str(launcher_repo/'install.sh'),'--no-build','--terminal',terminal],env=env,check=True,timeout=10,stdout=subprocess.PIPE)
         subprocess.run([str(root/'home/.local/bin/claude-code-tui-launch')],env=env,check=True,timeout=10)
         assert_args(terminal)
     print('PASS: run.sh and installed launcher scope Ghostty/Kitty Alt+digits overrides to the application window')
