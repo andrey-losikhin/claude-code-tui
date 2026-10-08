@@ -70,6 +70,67 @@ impl NotesManager {
         }
     }
 
+    pub fn catalog(&self) -> Vec<(String, PathBuf)> {
+        let mut entries = Vec::new();
+        for root in [&self.root, &self.legacy_root].into_iter().flatten() {
+            if let Ok(files) = fs::read_dir(root) {
+                for file in files
+                    .flatten()
+                    .filter(|file| file.file_type().is_ok_and(|kind| kind.is_file()))
+                {
+                    let path = file.path();
+                    if path.extension().is_some_and(|extension| extension == "md")
+                        && let Some(id) = path
+                            .file_stem()
+                            .and_then(|stem| stem.to_str())
+                            .filter(|id| valid_id(id))
+                        && !entries.iter().any(|(known, _)| known == id)
+                    {
+                        entries.push((id.to_owned(), path));
+                    }
+                }
+            }
+        }
+        entries.sort_by(|a, b| a.0.cmp(&b.0));
+        entries
+    }
+    pub fn open(&mut self, id: &str, project: &Path, area: Rect) -> io::Result<()> {
+        self.exit_requested = false;
+        let file = self.ensure_note(id)?;
+        self.editors.start_editor(id, &file, project, area)?;
+        self.visible.insert(id.to_owned());
+        Ok(())
+    }
+    pub fn append_selection(
+        &mut self,
+        id: &str,
+        project: &Path,
+        area: Rect,
+        text: &str,
+    ) -> io::Result<()> {
+        let file = self.ensure_note(id)?;
+        let fragment = format!(
+            "\n\n## Фрагмент чата\n\n{}\n",
+            text.lines()
+                .map(|line| format!("> {line}"))
+                .collect::<Vec<_>>()
+                .join("\n")
+        );
+        if self.editors.is_running(id) {
+            self.open(id, project, area)?;
+            self.editors
+                .send_bytes(b"\x1c\x0e:normal! G\r:startinsert!\r")?;
+            self.editors.send_paste(&fragment)?;
+            self.editors.send_bytes(b"\x1c\x0e")?;
+        } else {
+            OpenOptions::new()
+                .append(true)
+                .open(file)?
+                .write_all(fragment.as_bytes())?;
+            self.open(id, project, area)?;
+        }
+        Ok(())
+    }
     pub fn has_note(&self, id: &str) -> bool {
         self.known.contains(id)
     }

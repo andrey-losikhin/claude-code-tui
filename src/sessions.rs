@@ -9,6 +9,7 @@ use std::time::SystemTime;
 pub struct Session {
     pub id: String,
     pub project_path: PathBuf,
+    pub history_path: Option<PathBuf>,
     pub title: String,
     pub custom_title: Option<String>,
     pub git_branch: Option<String>,
@@ -257,6 +258,7 @@ fn read_session(path: &Path, project_hint: Option<&Path>) -> io::Result<Option<S
         return Ok(None);
     };
     let session = Session {
+        history_path: Some(path.to_path_buf()),
         title: custom_title.clone().or(title).unwrap_or_else(|| id.clone()),
         id,
         project_path,

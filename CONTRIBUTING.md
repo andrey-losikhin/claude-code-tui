@@ -29,11 +29,22 @@ Use Conventional Commit-style subjects where practical (`feat:`, `fix:`,
 `docs:`, `test:`, `ci:`, `chore:`). Versioned changes follow Semantic Versioning;
 pre-1.0 minor releases may contain breaking changes. Update the Unreleased
 section of CHANGELOG.md for user-visible changes. Maintainers review and squash
-PRs; local working plans belong in ignored `.docs/`.
+PRs after the latest head passes stable/MSRV CI and both CodeQL jobs; local working plans belong in ignored `.docs/`.
 
 By submitting a contribution, you confirm you have the right to contribute it
 and agree to license it under this repository's Apache-2.0 license. Respect
 [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md). No CLA is currently required.
+
+## Documentation and maintenance
+
+Keep README.md and README.ru.md consistent for features, controls and limitations.
+Update architecture/security docs for changes to subprocesses, hooks, local data,
+search or copying. Evidence and private plans stay in ignored `.docs/`. Do not
+claim certifications or test coverage the project does not actually have.
+
+See [docs/maintenance.md](docs/maintenance.md) for merge/release gates and current
+distribution policy. Retain Apache-2.0 LICENSE/NOTICE and required third-party
+attribution when adding material.
 
 ## Security
 

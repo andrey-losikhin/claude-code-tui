@@ -1,11 +1,15 @@
 mod app;
+mod commands;
 mod config;
+mod events;
 mod new_chat;
 mod notes;
 mod pty;
+mod search;
 mod sessions;
 mod theme;
 mod ui;
+mod workspace;
 
 use std::io;
 
@@ -18,6 +22,13 @@ use crossterm::event::{KeyCode, KeyModifiers};
 use std::time::{Duration, Instant};
 
 fn main() -> io::Result<()> {
+    let mut args = std::env::args_os().skip(1);
+    if args.next().is_some_and(|arg| arg == "--tui-hook") {
+        if let Some(path) = args.next() {
+            events::emit_hook(std::path::Path::new(&path));
+        }
+        return Ok(());
+    }
     let mut terminal = ratatui::try_init()?;
     let mut _terminal_guard = TerminalRestoreGuard { enhanced: false };
     if crossterm::terminal::supports_keyboard_enhancement().unwrap_or(false) {
@@ -37,11 +48,26 @@ fn main() -> io::Result<()> {
     let mut app = app::App::load();
     let theme = theme::Theme::from_environment();
     let mut processes = pty::PtyManager::default();
+    let bridge = match events::EventBridge::new() {
+        Ok(bridge) => Some(bridge),
+        Err(error) => {
+            app.status = format!("События CLI недоступны, статус неизвестен: {error}");
+            None
+        }
+    };
+    processes.hook_settings = bridge.as_ref().map(|bridge| bridge.settings.clone());
     let mut notes = notes::NotesManager::default();
     let mut output_viewer = pty::PtyManager::default();
     let mut output_snapshot: Option<OutputSnapshot> = None;
     let mut chat_selection_enabled = true;
 
+    let search_worker = search::SearchWorker::new();
+    let mut search_query_sent = String::new();
+    let mut selected_fragment: Option<String> = None;
+    let mut layout_drag: Option<bool> = None;
+    let mut previous_chat: Option<String> = None;
+    let mut tracked_chat: Option<String> = None;
+    let notifier = events::Notifier::new();
     let mut last_history_refresh = Instant::now();
     while !app.should_quit {
         output_viewer.drain_output();
@@ -50,12 +76,43 @@ fn main() -> io::Result<()> {
             drop(output_snapshot.take());
         }
         let completed = processes.drain_output();
+        if let Some(bridge) = &bridge {
+            for event in bridge.drain() {
+                if processes.is_running(&event.session_id) {
+                    let visible = processes.active_id() == Some(event.session_id.as_str())
+                        && app.focused_panel == FocusPanel::Dialogue
+                        && !app.help_visible
+                        && !app.input_active()
+                        && app.popup.is_none()
+                        && output_viewer.active_id().is_none();
+                    let id = event.session_id.clone();
+                    if app.activity.apply(event, visible) {
+                        let (desktop, sound) = app.notification_settings();
+                        notifier.notify(desktop, sound);
+                        app.status = format!(
+                            "{} · {}",
+                            app.display_title_for_id(&id),
+                            app.activity.label(&id)
+                        );
+                    }
+                }
+            }
+        }
+        if app.focused_panel == FocusPanel::Dialogue
+            && !app.input_active()
+            && !app.help_visible
+            && app.popup.is_none()
+            && output_viewer.active_id().is_none()
+            && let Some(id) = processes.active_id()
+        {
+            app.activity.unread.remove(id);
+        }
         let active_finished = processes
             .active_id()
             .is_some_and(|id| !processes.is_running(id));
         processes.remove_stopped();
         if active_finished && !notes.exit_requested {
-            app.focused_panel = FocusPanel::Projects;
+            app.focus_projects();
             app.selected_session = None;
             app.status = "CLI завершён · чат убран из открытых".to_owned();
         }
@@ -78,10 +135,55 @@ fn main() -> io::Result<()> {
                 FocusPanel::Projects
             };
         }
+        if let Some(popup) = &mut app.popup
+            && popup.kind == workspace::Kind::Search
+        {
+            if let Some(result) = search_worker.result() {
+                popup.entries = result.entries;
+                popup.selected = 0;
+                popup.hint = format!(
+                    "{} результатов · {} пропущено{}",
+                    popup.entries.len(),
+                    result.skipped,
+                    if result.limited {
+                        " · поиск ограничен"
+                    } else {
+                        ""
+                    }
+                );
+            }
+            if popup.query != search_query_sent {
+                let query = popup.query.clone();
+                let sources = search::sources(
+                    &app.sessions,
+                    |id| app.display_title_for_id(id),
+                    notes.catalog(),
+                );
+                if search_worker.request(query.clone(), sources).is_some() {
+                    search_query_sent = query;
+                    if let Some(popup) = &mut app.popup {
+                        popup.entries.clear();
+                        popup.hint = "Поиск…".into();
+                    }
+                }
+            }
+        }
+        let current_chat = processes.active_id().map(str::to_owned);
+        if current_chat != tracked_chat {
+            selected_fragment = None;
+            if tracked_chat.is_some() {
+                previous_chat = tracked_chat.take();
+            }
+            tracked_chat = current_chat;
+        }
         let terminal_size = terminal.size()?;
         let bounds = ratatui::layout::Rect::new(0, 0, terminal_size.width, terminal_size.height);
         output_viewer.resize(bounds);
-        let (chat_area, note_area) = ui::dialog_areas(bounds, notes.is_visible());
+        let (chat_area, note_area) = ui::configured_dialog_areas(
+            bounds,
+            notes.is_visible() && !app.maximized,
+            &app.layout(),
+        );
         processes.resize(chat_area);
         if let Some(area) = note_area {
             notes.resize(area);
@@ -117,12 +219,170 @@ fn main() -> io::Result<()> {
         })?;
 
         if event::poll(Duration::from_millis(16))? {
-            let input = event::read()?;
+            let mut input = event::read()?;
             if let Event::Key(key) = &input
                 && matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat)
             {
                 processes.clear_selection();
                 output_viewer.clear_selection();
+            }
+            if let Event::Key(key) = &input
+                && let Some(panel) = commands::numbered_panel(key)
+            {
+                output_viewer.close_active()?;
+                drop(output_snapshot.take());
+                search_worker.cancel();
+                focus_numbered_panel(panel, &mut app, &processes, &mut notes, bounds);
+                continue;
+            }
+            if app.popup.is_some() {
+                let chosen = match &input {
+                    Event::Key(key)
+                        if matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat) =>
+                    {
+                        if key.code == KeyCode::Esc {
+                            app.popup = None;
+                            search_worker.cancel();
+                            continue;
+                        }
+                        if key.modifiers == KeyModifiers::ALT {
+                            app.popup = None;
+                            Some(workspace::Target::Command(match key.code {
+                                KeyCode::Char(c) => app::App::shortcut_character(c),
+                                _ => '\0',
+                            }))
+                        } else {
+                            app.popup.as_mut().and_then(|popup| popup.key(key.code))
+                        }
+                    }
+                    Event::Mouse(mouse) => {
+                        if let Some((rect, offset)) = mouse_layout.popup {
+                            if mouse.kind == MouseEventKind::Down(MouseButton::Left)
+                                && rect.contains((mouse.column, mouse.row).into())
+                                && mouse.row > rect.y
+                                && mouse.row < rect.bottom().saturating_sub(1)
+                            {
+                                if let Some(popup) = &mut app.popup {
+                                    popup.selected = offset + usize::from(mouse.row - rect.y - 1);
+                                    popup.key(KeyCode::Enter)
+                                } else {
+                                    None
+                                }
+                            } else if let Some(popup) = &mut app.popup {
+                                match mouse.kind {
+                                    MouseEventKind::ScrollDown => popup.key(KeyCode::Down),
+                                    MouseEventKind::ScrollUp => popup.key(KeyCode::Up),
+                                    _ => None,
+                                }
+                            } else {
+                                None
+                            }
+                        } else {
+                            None
+                        }
+                    }
+                    Event::Paste(text) => {
+                        if let Some(popup) = &mut app.popup {
+                            for character in text.chars().filter(|c| !c.is_control()) {
+                                popup.key(KeyCode::Char(character));
+                            }
+                        }
+                        None
+                    }
+                    _ => None,
+                };
+                if let Some(target) = chosen {
+                    app.popup = None;
+                    match target {
+                        workspace::Target::Command(character) => {
+                            if character == '\0' { /* Keep the original Alt arrow event. */
+                            } else {
+                                input = Event::Key(crossterm::event::KeyEvent::new(
+                                    KeyCode::Char(character),
+                                    KeyModifiers::ALT,
+                                ));
+                            }
+                        }
+                        workspace::Target::Chat(id, project) => {
+                            let action = app.resume_id(id, project);
+                            start_cli_action(action, &mut processes, &mut app, chat_area)?;
+                            continue;
+                        }
+                        workspace::Target::Note(id, path) => {
+                            app.maximized = false;
+                            if let Some(session) =
+                                app.sessions.iter().find(|session| session.id == id)
+                            {
+                                let project = session.project_path.clone();
+                                let action = app.resume_id(id.clone(), project.clone());
+                                start_cli_action(action, &mut processes, &mut app, chat_area)?;
+                                if processes.active_id() == Some(id.as_str()) {
+                                    match notes.open(
+                                        &id,
+                                        &project,
+                                        ui::configured_dialog_areas(bounds, true, &app.layout())
+                                            .1
+                                            .unwrap_or(chat_area),
+                                    ) {
+                                        Ok(()) => app.focused_panel = FocusPanel::Notes,
+                                        Err(error) => {
+                                            app.status =
+                                                format!("Не удалось открыть заметку: {error}")
+                                        }
+                                    }
+                                }
+                            } else {
+                                if let Err(error) = output_viewer.start_output_viewer(
+                                    &path,
+                                    path.parent().unwrap_or(&path),
+                                    bounds,
+                                ) {
+                                    app.status = format!("Не удалось открыть заметку: {error}");
+                                }
+                            }
+                            continue;
+                        }
+                        workspace::Target::Search {
+                            id,
+                            project,
+                            text,
+                            note,
+                            line,
+                        } => {
+                            if let Some(path) = note {
+                                if let Err(error) = output_viewer.start_search_viewer(
+                                    &path,
+                                    path.parent().unwrap_or(&path),
+                                    bounds,
+                                    line,
+                                ) {
+                                    app.status = format!("Не удалось открыть результат: {error}");
+                                }
+                            } else {
+                                let action = app.resume_id(id, project.clone());
+                                start_cli_action(action, &mut processes, &mut app, chat_area)?;
+                                match OutputSnapshot::create(&text).and_then(|snapshot| {
+                                    output_viewer.start_search_viewer(
+                                        &snapshot.path,
+                                        &project,
+                                        bounds,
+                                        line,
+                                    )?;
+                                    Ok(snapshot)
+                                }) {
+                                    Ok(snapshot) => output_snapshot = Some(snapshot),
+                                    Err(error) => {
+                                        app.status =
+                                            format!("Не удалось открыть результат: {error}")
+                                    }
+                                }
+                            }
+                            continue;
+                        }
+                    }
+                } else {
+                    continue;
+                }
             }
             if let Event::Key(key) = &input
                 && matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat)
@@ -132,6 +392,173 @@ fn main() -> io::Result<()> {
                     KeyCode::Char(character) => app::App::shortcut_character(character),
                     _ => '\0',
                 };
+                if output_viewer.active_id().is_some()
+                    && (commands::COMMANDS
+                        .iter()
+                        .any(|command| command.key == shortcut)
+                        && !matches!(shortcut, 'b' | 'c')
+                        || matches!(
+                            key.code,
+                            KeyCode::Left | KeyCode::Right | KeyCode::Up | KeyCode::Down
+                        ))
+                {
+                    output_viewer.close_active()?;
+                    drop(output_snapshot.take());
+                }
+                if let Some(panel) = commands::numbered_panel(key) {
+                    search_worker.cancel();
+                    focus_numbered_panel(panel, &mut app, &processes, &mut notes, bounds);
+                    continue;
+                }
+                match shortcut {
+                    'u' => {
+                        app.toggle_sidebar();
+                        continue;
+                    }
+                    'd' => {
+                        app.maximized = !app.maximized;
+                        app.focused_panel = FocusPanel::Dialogue;
+                        continue;
+                    }
+                    'h' => {
+                        app.cancel_input_modes();
+                        app.help_visible = !app.help_visible;
+                        app.help_scroll = 0;
+                        continue;
+                    }
+                    'z' => {
+                        app.collapse_all();
+                        continue;
+                    }
+                    't' | 'a' => {
+                        app.toggle_notification(shortcut == 't');
+                        continue;
+                    }
+                    'j' => {
+                        if let Some(id) = &previous_chat
+                            && let Some(session) =
+                                app.sessions.iter().find(|session| &session.id == id)
+                        {
+                            let action = app.resume_id(id.clone(), session.project_path.clone());
+                            start_cli_action(action, &mut processes, &mut app, chat_area)?;
+                        }
+                        continue;
+                    }
+                    'f' | 'l' => {
+                        app.cancel_input_modes();
+                        app.help_visible = false;
+                        search_worker.cancel();
+                        search_query_sent.clear();
+                        let entries = if shortcut == 'l' {
+                            notes
+                                .catalog()
+                                .into_iter()
+                                .map(|(id, path)| workspace::Entry {
+                                    label: format!(
+                                        "✎ {} · {}",
+                                        app.display_title_for_id(&id),
+                                        path.display()
+                                    ),
+                                    target: workspace::Target::Note(id, path),
+                                })
+                                .collect()
+                        } else {
+                            Vec::new()
+                        };
+                        app.popup = Some(workspace::Popup::new(
+                            if shortcut == 'l' {
+                                workspace::Kind::Notes
+                            } else {
+                                workspace::Kind::Search
+                            },
+                            entries,
+                        ));
+                        continue;
+                    }
+                    'e' => {
+                        app.maximized = false;
+                        if let (Some(text), Some(id), Some(project)) = (
+                            &selected_fragment,
+                            processes.active_id(),
+                            processes.active_project_path(),
+                        ) {
+                            match notes.append_selection(
+                                id,
+                                project,
+                                ui::configured_dialog_areas(bounds, true, &app.layout())
+                                    .1
+                                    .unwrap_or(chat_area),
+                                text,
+                            ) {
+                                Ok(()) => {
+                                    app.focused_panel = FocusPanel::Notes;
+                                    app.status =
+                                        "Фрагмент добавлен в заметку · :w сохранить".into();
+                                }
+                                Err(error) => {
+                                    app.status = format!("Не удалось добавить фрагмент: {error}")
+                                }
+                            }
+                        } else {
+                            app.status = "Сначала выделите текст мышью в открытом чате".into();
+                        }
+                        continue;
+                    }
+                    's' | 'k' => {
+                        app.cancel_input_modes();
+                        app.help_visible = false;
+                        let entries = if shortcut == 'k' {
+                            commands::COMMANDS
+                                .iter()
+                                .map(|command| workspace::Entry {
+                                    label: format!("{} · {}", command.label, command.shortcut()),
+                                    target: workspace::Target::Command(command.key),
+                                })
+                                .collect()
+                        } else {
+                            let mut entries = Vec::new();
+                            for session in &open_sessions {
+                                entries.push(workspace::Entry {
+                                    label: format!(
+                                        "◉ {} · {}",
+                                        session.title,
+                                        session.project_path.display()
+                                    ),
+                                    target: workspace::Target::Chat(
+                                        session.id.clone(),
+                                        session.project_path.clone(),
+                                    ),
+                                });
+                            }
+                            for session in &app.sessions {
+                                if !open_sessions.iter().any(|open| open.id == session.id) {
+                                    entries.push(workspace::Entry {
+                                        label: format!(
+                                            "{} · {}",
+                                            app.display_title_for_id(&session.id),
+                                            session.project_path.display()
+                                        ),
+                                        target: workspace::Target::Chat(
+                                            session.id.clone(),
+                                            session.project_path.clone(),
+                                        ),
+                                    });
+                                }
+                            }
+                            entries
+                        };
+                        app.popup = Some(workspace::Popup::new(
+                            if shortcut == 'k' {
+                                workspace::Kind::Commands
+                            } else {
+                                workspace::Kind::Switcher
+                            },
+                            entries,
+                        ));
+                        continue;
+                    }
+                    _ => {}
+                }
                 if shortcut == 'c' {
                     chat_selection_enabled = !chat_selection_enabled;
                     app.status = if chat_selection_enabled {
@@ -222,12 +649,63 @@ fn main() -> io::Result<()> {
                 continue;
             }
             if let Event::Mouse(mouse) = input {
+                if !app.input_active() && !app.help_visible {
+                    if mouse.kind == MouseEventKind::Down(MouseButton::Left) {
+                        if !app.layout().sidebar_hidden
+                            && (mouse.column == chat_area.x
+                                || mouse.column.saturating_add(1) == chat_area.x)
+                        {
+                            layout_drag = Some(true);
+                            continue;
+                        }
+                        if note_area.is_some_and(|area| {
+                            mouse.column >= area.x
+                                && (mouse.row == area.y || mouse.row.saturating_add(1) == area.y)
+                        }) {
+                            layout_drag = Some(false);
+                            continue;
+                        }
+                    }
+                    if let Some(sidebar) = layout_drag
+                        && matches!(
+                            mouse.kind,
+                            MouseEventKind::Drag(MouseButton::Left)
+                                | MouseEventKind::Up(MouseButton::Left)
+                        )
+                    {
+                        if sidebar {
+                            app.resize_layout(
+                                Some(
+                                    ((u32::from(mouse.column) * 100)
+                                        / u32::from(bounds.width.max(1)))
+                                        as u16,
+                                ),
+                                None,
+                            );
+                        } else {
+                            app.resize_layout(
+                                None,
+                                Some(
+                                    ((u32::from(mouse.row) * 100)
+                                        / u32::from(bounds.height.saturating_sub(1).max(1)))
+                                        as u16,
+                                ),
+                            );
+                        }
+                        if mouse.kind == MouseEventKind::Up(MouseButton::Left) {
+                            layout_drag = None;
+                            app.save_layout();
+                        }
+                        continue;
+                    }
+                }
                 if chat_selection_enabled && !app.input_active() && !app.help_visible {
                     let (handled, text) = processes.select_mouse(mouse, chat_area);
                     if handled {
                         app.focused_panel = FocusPanel::Dialogue;
                         if let Some(text) = text {
                             let _ = processes.send_mouse(mouse, chat_area);
+                            selected_fragment = Some(text.clone());
                             copy_selection(&text, &mut app);
                         }
                         continue;
@@ -256,8 +734,18 @@ fn main() -> io::Result<()> {
                     && !app.help_visible
                 {
                     notes.cancel_exit();
-                    app.focused_panel =
-                        adjacent_panel(app.focused_panel, key.code, notes.is_visible());
+                    app.focused_panel = adjacent_panel(
+                        app.focused_panel,
+                        key.code,
+                        notes.is_visible() && !app.maximized,
+                    );
+                    if matches!(
+                        app.focused_panel,
+                        FocusPanel::Projects | FocusPanel::OpenSessions
+                    ) && app.layout().sidebar_hidden
+                    {
+                        app.show_sidebar();
+                    }
                     continue;
                 }
                 if let KeyCode::Char(character) = key.code
@@ -275,15 +763,15 @@ fn main() -> io::Result<()> {
                         Ok(Some(_)) => {
                             app.sync_live_sessions(&processes.open_sessions());
                             app.selected_session = None;
-                            app.focused_panel = FocusPanel::Projects;
+                            app.focus_projects();
                             app.status = "Чат закрыт; сессию можно открыть снова".to_owned();
                         }
                         Ok(None) => {
-                            app.focused_panel = FocusPanel::Projects;
+                            app.focus_projects();
                             app.status = "Нет открытого чата".to_owned();
                         }
                         Err(error) => {
-                            app.focused_panel = FocusPanel::Projects;
+                            app.focus_projects();
                             app.status = format!("Не удалось закрыть чат: {error}");
                         }
                     }
@@ -293,10 +781,11 @@ fn main() -> io::Result<()> {
                 {
                     notes.cancel_exit();
                     app.help_visible = false;
+                    app.maximized = false;
                     if let (Some(id), Some(project)) =
                         (processes.active_id(), processes.active_project_path())
                     {
-                        let (_, area) = ui::dialog_areas(bounds, true);
+                        let (_, area) = ui::configured_dialog_areas(bounds, true, &app.layout());
                         match notes.toggle(id, project, area.unwrap_or(chat_area)) {
                             Ok(true) => {
                                 app.focused_panel = FocusPanel::Notes;
@@ -358,7 +847,7 @@ fn main() -> io::Result<()> {
                             processes.active_id(),
                             processes.active_project_path(),
                         );
-                        app.focused_panel = FocusPanel::Projects;
+                        app.focus_projects();
                         let _ = app.handle_key(KeyCode::Char('r'));
                     } else {
                         app.status = "Выберите открытый чат для переименования".to_owned();
@@ -400,6 +889,43 @@ fn main() -> io::Result<()> {
     }
 
     Ok(())
+}
+
+fn focus_numbered_panel(
+    panel: FocusPanel,
+    app: &mut app::App,
+    processes: &pty::PtyManager,
+    notes: &mut notes::NotesManager,
+    bounds: ratatui::layout::Rect,
+) {
+    app.cancel_input_modes();
+    app.popup = None;
+    app.help_visible = false;
+    notes.cancel_exit();
+    match panel {
+        FocusPanel::Projects => app.focus_projects(),
+        FocusPanel::OpenSessions => {
+            app.show_sidebar();
+            app.focused_panel = panel;
+        }
+        FocusPanel::Dialogue => app.focused_panel = panel,
+        FocusPanel::Notes => {
+            if let (Some(id), Some(project)) =
+                (processes.active_id(), processes.active_project_path())
+            {
+                app.maximized = false;
+                let area = ui::configured_dialog_areas(bounds, true, &app.layout())
+                    .1
+                    .unwrap_or(bounds);
+                match notes.open(id, project, area) {
+                    Ok(()) => app.focused_panel = panel,
+                    Err(error) => app.status = format!("Не удалось открыть заметку: {error}"),
+                }
+            } else {
+                app.status = "Alt+4: сначала откройте чат для заметки".into();
+            }
+        }
+    }
 }
 
 fn adjacent_panel(panel: FocusPanel, key: KeyCode, note: bool) -> FocusPanel {
@@ -486,7 +1012,7 @@ fn handle_mouse(
     let point = (mouse.column, mouse.row).into();
     if layout.projects.contains(point) {
         if click {
-            app.focused_panel = FocusPanel::Projects;
+            app.focus_projects();
             if let Some(row) = list_row(mouse, layout.projects, layout.project_offset)
                 .filter(|row| *row < app.rows.len())
             {
@@ -496,7 +1022,7 @@ fn handle_mouse(
                 }
             }
         } else if let Some(key) = scroll {
-            app.focused_panel = FocusPanel::Projects;
+            app.focus_projects();
             let _ = app.handle_key(key);
         }
     } else if layout.sessions.contains(point) {
@@ -538,6 +1064,7 @@ fn request_app_exit(app: &mut app::App, notes: &mut notes::NotesManager) {
         Ok(ready) => {
             app.should_quit = ready;
             if !ready {
+                app.maximized = false;
                 app.focused_panel = FocusPanel::Notes;
                 app.status =
                     "Выход: подтвердите сохранение в nvim · Alt+↑ отменить выход".to_owned();

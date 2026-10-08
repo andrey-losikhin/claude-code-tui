@@ -5,6 +5,23 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(default)]
+pub struct LayoutConfig {
+    pub sidebar_percent: u16,
+    pub chat_percent: u16,
+    #[serde(default)]
+    pub sidebar_hidden: bool,
+}
+impl Default for LayoutConfig {
+    fn default() -> Self {
+        Self {
+            sidebar_percent: 32,
+            chat_percent: 55,
+            sidebar_hidden: false,
+        }
+    }
+}
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct UserConfig {
     #[serde(default)]
@@ -21,6 +38,12 @@ pub struct UserConfig {
     pub renamed_sessions: HashMap<String, String>,
     #[serde(default)]
     pub selected_model: Option<String>,
+    #[serde(default)]
+    pub desktop_notifications: bool,
+    #[serde(default)]
+    pub sound_notifications: bool,
+    #[serde(default)]
+    pub layout: LayoutConfig,
 }
 
 pub fn load() -> (UserConfig, Option<String>) {
@@ -75,4 +98,19 @@ fn config_path() -> Option<PathBuf> {
         .map(PathBuf::from)
         .or_else(|| std::env::var_os("HOME").map(|home| Path::new(&home).join(".config")))
         .map(|root| root.join("claude-code-tui").join("config.json"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn old_config_keeps_layout_and_opt_in_notifications() {
+        let config: UserConfig = serde_json::from_str(r#"{"projects":[]}"#).unwrap();
+        assert_eq!(config.layout.sidebar_percent, 32);
+        assert_eq!(config.layout.chat_percent, 55);
+        assert!(!config.desktop_notifications && !config.sound_notifications);
+        let restored: UserConfig =
+            serde_json::from_str(&serde_json::to_string(&config).unwrap()).unwrap();
+        assert_eq!(restored.layout.sidebar_percent, 32);
+    }
 }

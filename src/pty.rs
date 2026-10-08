@@ -38,6 +38,7 @@ pub struct PtyManager {
     active: Option<String>,
     selection: Option<DragSelection>,
     next_background: usize,
+    pub hook_settings: Option<String>,
 }
 
 struct DragSelection {
@@ -141,6 +142,10 @@ impl PtyManager {
             .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
         let mut command = CommandBuilder::new("claude");
         command.cwd(project_path);
+        if let Some(settings) = &self.hook_settings {
+            command.arg("--settings");
+            command.arg(settings);
+        }
         if let Some(resume_id) = resume_id {
             command.arg(format!("--resume={resume_id}"));
         } else {
@@ -172,6 +177,24 @@ impl PtyManager {
     }
 
     pub fn start_output_viewer(&mut self, file: &Path, cwd: &Path, size: Rect) -> io::Result<()> {
+        self.start_viewer(file, cwd, size, None)
+    }
+    pub fn start_search_viewer(
+        &mut self,
+        file: &Path,
+        cwd: &Path,
+        size: Rect,
+        line: usize,
+    ) -> io::Result<()> {
+        self.start_viewer(file, cwd, size, Some(line))
+    }
+    fn start_viewer(
+        &mut self,
+        file: &Path,
+        cwd: &Path,
+        size: Rect,
+        line: Option<usize>,
+    ) -> io::Result<()> {
         let mut command = CommandBuilder::new("nvim");
         command.cwd(cwd);
         command.arg("-R");
@@ -179,7 +202,10 @@ impl PtyManager {
         command.arg("-c");
         command.arg("setlocal buftype=nofile bufhidden=wipe noswapfile");
         command.arg("-c");
-        command.arg("normal! G");
+        command.arg(
+            line.map(|line| format!("normal! {}Gzz", line.max(1)))
+                .unwrap_or_else(|| "normal! G".into()),
+        );
         command.arg("--");
         command.arg(file);
         self.spawn_session(
