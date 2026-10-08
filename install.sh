@@ -40,9 +40,16 @@ launcher="$bin_dir/claude-code-tui-launch"
     cat <<'LAUNCH'
 bin_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 export PATH="$bin_dir:/usr/local/bin:$PATH"
+terminal_args=()
+for panel_digit in 1 2 3 4; do
+    case $terminal_kind in
+        ghostty) terminal_args+=("--keybind=alt+digit_${panel_digit}=esc:${panel_digit}" "--keybind=alt+${panel_digit}=esc:${panel_digit}") ;;
+        kitty) terminal_args+=(-o "map alt+${panel_digit} send_text all \x1b${panel_digit}") ;;
+    esac
+done
 case $terminal_kind in
-    ghostty) exec ghostty --working-directory="$HOME" -e "$bin_dir/claude-code-tui" ;;
-    kitty) exec kitty --directory="$HOME" "$bin_dir/claude-code-tui" ;;
+    ghostty) exec ghostty "${terminal_args[@]}" --working-directory="$HOME" -e "$bin_dir/claude-code-tui" ;;
+    kitty) exec kitty "${terminal_args[@]}" --directory="$HOME" "$bin_dir/claude-code-tui" ;;
 esac
 LAUNCH
 } > "$launcher"

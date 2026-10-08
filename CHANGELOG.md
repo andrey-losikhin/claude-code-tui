@@ -23,7 +23,25 @@ format. Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   using the saved session-to-directory mapping, even when history has no cwd yet.
 - Project metadata is recognized after large startup records.
 
+### Changed
+
+- Public docs cover hook/search/notification boundaries, terminal overrides,
+  troubleshooting and maintainer merge/release gates.
+- English and Russian feature/control documentation is synchronized.
+
 ### Added
+
+- Global Alt+1…4 panel selection before CLI/editor/modal input, with scoped
+  Ghostty/Kitty launcher overrides preventing terminal tab-key interception.
+
+- Observational CLI hooks for working/permission/input/ready/error statuses,
+  unread markers and opt-in generic desktop/sound notifications.
+- Global fuzzy switcher, previous-chat navigation, command palette, shortcut
+  popup and collapse-all-projects action, including Cyrillic equivalents.
+- Cancellable bounded message/Markdown search, note catalog and adding mouse
+  selections to notes without discarding existing Neovim buffers.
+- Persistent panel proportions with mouse dragging, sidebar toggle and chat
+  maximization.
 
 - Initial public pre-1.0 source distribution (Cargo package version 0.1.0).
 - Project groups, search, pins, live rename and multiple Claude CLI sessions.

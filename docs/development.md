@@ -28,7 +28,13 @@ old accumulated text.
 
 The suite covers notes and unsaved buffers, project browsing, session open/close/
 rename, Russian global shortcuts, CLI key/paste protocols, mouse coordinates,
-chat-only selection, clipboard fallback and Neovim output snapshots. It does
+chat-only selection, clipboard fallback and Neovim output snapshots. The workspace
+scenario also invokes the real hook adapter with synthetic events, verifies unread
+markers and opt-in notification content, fuzzy/global modals, saved layout dragging,
+message search excluding tools, and selection append preserving a dirty editor.
+The panel-digits scenario verifies classic Alt, CSI-u/repeats from active Claude
+and Neovim insert mode, modals/viewers, hidden/maximized panels and launcher argv
+with stub terminals. It does
 not verify real Claude API/auth behavior, GUI clipboard permissions or every
 terminal's key bindings. Do manual checks with non-sensitive conversations.
 
@@ -42,3 +48,6 @@ full commit SHA pins and least-privilege token permissions.
 Use a topic branch, update tests/docs, run checks, and open a focused PR.
 Do not include `.docs/`, private local planning files, `target/`, real transcripts,
 account configuration or notes. Read [CONTRIBUTING.md](../CONTRIBUTING.md).
+
+Merge and release gates are in [maintenance.md](maintenance.md). CI checks apply
+to the exact PR head; document real-account/GUI verification limits separately.

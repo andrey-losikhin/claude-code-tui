@@ -34,6 +34,9 @@ pub enum AppAction {
 }
 
 pub struct App {
+    pub maximized: bool,
+    pub popup: Option<crate::workspace::Popup>,
+    pub activity: crate::events::Activity,
     pub should_quit: bool,
     pub focused_panel: FocusPanel,
     pub sessions: Vec<Session>,
@@ -59,6 +62,92 @@ pub struct App {
 }
 
 impl App {
+    pub fn layout(&self) -> crate::config::LayoutConfig {
+        let mut layout = self.config.layout.clone();
+        layout.sidebar_percent = layout.sidebar_percent.clamp(20, 65);
+        layout.chat_percent = layout.chat_percent.clamp(20, 80);
+        if self.maximized {
+            layout.sidebar_hidden = true;
+        }
+        layout
+    }
+    pub fn resize_layout(&mut self, sidebar: Option<u16>, chat: Option<u16>) {
+        if let Some(value) = sidebar {
+            self.config.layout.sidebar_percent = value.clamp(20, 65);
+        }
+        if let Some(value) = chat {
+            self.config.layout.chat_percent = value.clamp(20, 80);
+        }
+    }
+    pub fn save_layout(&mut self) {
+        self.save_config();
+    }
+    pub fn show_sidebar(&mut self) {
+        self.maximized = false;
+        if self.config.layout.sidebar_hidden {
+            self.config.layout.sidebar_hidden = false;
+            self.save_config();
+        }
+    }
+    pub fn focus_projects(&mut self) {
+        self.show_sidebar();
+        self.focused_panel = FocusPanel::Projects;
+    }
+    pub fn toggle_sidebar(&mut self) {
+        self.config.layout.sidebar_hidden = !self.config.layout.sidebar_hidden;
+        self.maximized = false;
+        self.focused_panel = FocusPanel::Dialogue;
+        self.save_config();
+    }
+    pub fn collapse_all(&mut self) {
+        self.collapsed_projects.extend(
+            self.sessions
+                .iter()
+                .map(|session| session.project_path.clone()),
+        );
+        self.collapsed_projects
+            .extend(self.config.projects.iter().cloned());
+        self.config.collapsed_projects = self.collapsed_projects.clone();
+        self.search_query.clear();
+        self.searching = false;
+        self.save_config();
+        self.refresh_rows();
+    }
+    pub fn notification_settings(&self) -> (bool, bool) {
+        (
+            self.config.desktop_notifications,
+            self.config.sound_notifications,
+        )
+    }
+    pub fn toggle_notification(&mut self, desktop: bool) {
+        let value = if desktop {
+            &mut self.config.desktop_notifications
+        } else {
+            &mut self.config.sound_notifications
+        };
+        *value = !*value;
+        self.status = format!(
+            "{}: {}",
+            if desktop {
+                "Desktop уведомления"
+            } else {
+                "Звук уведомлений"
+            },
+            if *value {
+                "включены"
+            } else {
+                "выключены"
+            }
+        );
+        self.save_config();
+    }
+    pub fn resume_id(&self, id: String, project_path: PathBuf) -> AppAction {
+        AppAction::Resume {
+            id,
+            project_path,
+            model: self.current_model(),
+        }
+    }
     pub fn load() -> Self {
         let (config, config_error) = config::load();
         let config_writable = config_error.is_none();
@@ -71,8 +160,15 @@ impl App {
             None => Err("Переменная HOME не задана".to_owned()),
         };
         let mut app = Self {
+            maximized: false,
+            popup: None,
+            activity: crate::events::Activity::default(),
             should_quit: false,
-            focused_panel: FocusPanel::Projects,
+            focused_panel: if config.layout.sidebar_hidden {
+                FocusPanel::Dialogue
+            } else {
+                FocusPanel::Projects
+            },
             sessions: Vec::new(),
             rows: Vec::new(),
             selected_row: None,
@@ -189,6 +285,7 @@ impl App {
                     .iter()
                     .find(|session| session.id == running.id);
                 sessions.push(Session {
+                    history_path: previous.and_then(|session| session.history_path.clone()),
                     id: running.id.clone(),
                     project_path: running.project_path.clone(),
                     title: previous

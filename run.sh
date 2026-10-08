@@ -33,12 +33,19 @@ case $terminal_kind in
 esac
 tui_cargo_build build --manifest-path "$project_root/Cargo.toml" --target-dir "$project_root/target" --locked
 binary="$project_root/target/debug/claude-code-tui"
+terminal_args=()
+for panel_digit in 1 2 3 4; do
+    case $terminal_kind in
+        ghostty) terminal_args+=("--keybind=alt+digit_${panel_digit}=esc:${panel_digit}" "--keybind=alt+${panel_digit}=esc:${panel_digit}") ;;
+        kitty) terminal_args+=(-o "map alt+${panel_digit} send_text all \x1b${panel_digit}") ;;
+    esac
+done
 case $terminal_kind in
     ghostty)
-        exec ghostty --working-directory="$project_root" -e "$binary"
+        exec ghostty "${terminal_args[@]}" --working-directory="$project_root" -e "$binary"
         ;;
     kitty)
-        exec kitty --directory="$project_root" "$binary"
+        exec kitty "${terminal_args[@]}" --directory="$project_root" "$binary"
         ;;
     here) exec "$binary" ;;
 esac

@@ -8,7 +8,8 @@ A local terminal workspace for the **Claude Code CLI**: organize chats by projec
 switch between running sessions, and edit per-chat Markdown notes in Neovim.
 
 [Русский README](README.ru.md) · [Architecture](docs/architecture.md) ·
-[Contributing](CONTRIBUTING.md) · [Security](SECURITY.md)
+[Contributing](CONTRIBUTING.md) · [Security](SECURITY.md) ·
+[Changelog](CHANGELOG.md) · [Maintenance](docs/maintenance.md)
 
 > **Early development:** Linux is the supported platform and the interface is
 > currently in Russian. The application launches your installed `claude` CLI;
@@ -25,6 +26,10 @@ switch between running sessions, and edit per-chat Markdown notes in Neovim.
 - Chat-only mouse selection: release the button to copy the selected text.
 - View the active chat's screen and retained scrollback in Neovim.
 - Terminal palette, native CLI colors, mouse navigation and Cyrillic shortcuts.
+- CLI event statuses and unread background replies; optional desktop/sound alerts.
+- Fuzzy chat switching, command palette, full-text message/Markdown search.
+- Knowledge-base catalog and selected chat fragments added to Neovim notes.
+- Drag-to-resize panels, saved proportions, sidebar toggle and maximized chat.
 - Desktop-menu installation for Ghostty or Kitty.
 
 The TUI does not call Anthropic's API or store account tokens. Account limits and
@@ -73,12 +78,27 @@ Claude authentication and terminal/Neovim configuration are not modified.
 ## Keyboard and mouse
 
 Global Alt shortcuts work from an active chat and use the equivalent Russian
-keyboard keys. Terminal-level bindings can intercept a key before the TUI.
+keyboard keys. The Ghostty/Kitty launchers override Alt+1…4 tab bindings for
+this application window so the keys reach the TUI in either keyboard layout. For `--terminal here`,
+existing terminal/window-manager bindings can still intercept them.
 
 | Key | Action |
 | --- | --- |
+| `Alt+1 / 2 / 3 / 4` | Projects / dialogue / open sessions / note (creates or shows it) |
 | `Alt+←/→/↑/↓` | Move between panels according to their position |
 | `Alt+N` / `Alt+Т` | New chat: select a project directory |
+| `Alt+S` / `Alt+Ы` | Fuzzy switcher: open and recent chats |
+| `Alt+J` / `Alt+О` | Return to the previous chat |
+| `Alt+K` / `Alt+Л` | Searchable command palette |
+| `Alt+H` / `Alt+Р` | Popup listing all TUI shortcuts |
+| `Alt+Z` / `Alt+Я` | Collapse all projects |
+| `Alt+F` / `Alt+А` | Search message text and Markdown notes |
+| `Alt+L` / `Alt+Д` | Knowledge-base note catalog |
+| `Alt+E` / `Alt+У` | Append the last Claude-pane selection to the active note |
+| `Alt+U` / `Alt+Г` | Hide/show the sidebar |
+| `Alt+D` / `Alt+В` | Maximize/restore the chat |
+| `Alt+T` / `Alt+Е` | Toggle desktop notifications (off by default) |
+| `Alt+A` / `Alt+Ф` | Toggle sound notifications (off by default) |
 | `Alt+X` / `Alt+Ч` | Stop only the active Claude session and return to projects |
 | `Alt+M` / `Alt+Ь` | Create/show/hide the active chat's Neovim note |
 | `Alt+B` / `Alt+И` | View only the active chat's output in Neovim |
@@ -89,6 +109,28 @@ keyboard keys. Terminal-level bindings can intercept a key before the TUI.
 | `/` or `f`, `r`, `p`, `m` | Search, rename, pin, set a model override in the sidebar |
 | `r` in open sessions | Rename the selected running chat |
 | `?` in the sidebar | Show help |
+
+Popups use typing to filter, `↑/↓` to select, `Enter` or a mouse click to open,
+`Esc` to cancel. Global keys remain available inside them. Drag the vertical
+sidebar border or the horizontal chat/note border to resize; proportions persist.
+The palette uses the same action registry as the shortcuts popup.
+
+Status comes from additive command hooks supplied to each CLI via `--settings`.
+The TUI never emits permission decisions or writes your Claude settings. If hooks
+are disabled by policy, the status stays unknown. `◆` marks a background reply or
+request for attention and clears when the chat is shown in the dialogue panel.
+Desktop alerts require `notify-send`; both alert options are opt-in and saved.
+Notifications contain no chat text. The private local hook socket is removed on
+normal exit; hook payload text is neither persisted nor forwarded to it.
+
+Search runs in a cancellable worker over top-level user/assistant text and saved
+Markdown. Tool payloads and subagent records are excluded. Limits: 200 results,
+5 seconds, 32 MiB per file, 1 MiB per record; skipped/limited work is shown in the
+popup. Results open the associated chat and a read-only Neovim view positioned
+at the match. A note result opens the saved file; unsaved editor text is not searched.
+The note catalog opens associated notes in their existing editor; notes without
+history are available in a read-only viewer. Selections are cleared when switching chats. `Alt+E` appends a Markdown quote to
+the current note, preserving an existing dirty buffer; use `:w` to save it.
 
 Drag with the left mouse button **inside the chat** to select across lines. The
 selection stays within the chat viewport, including when the pointer crosses a
@@ -104,6 +146,25 @@ If Kitty maps `Alt+V` to its own scrollback plugin, use `Alt+B`.
 `Ctrl+C` belongs to Claude and may only interrupt a request; use `Alt+X` to close
 its session. Modified CLI keys, including `Shift+Enter`, are preserved when the
 outer terminal reports the modifiers. Function keys are forwarded to the CLI.
+
+## Troubleshooting
+
+| Symptom | What to check |
+| --- | --- |
+| Installed window still uses old controls | Re-run `./install.sh`, close the old TUI and reopen **Claude Code TUI**. |
+| Alt+1…4 switches terminal tabs | Use the desktop launcher or `./run.sh --terminal ghostty` / `kitty`; these supply window-specific overrides. Direct launches inherit terminal bindings. Check window-manager shortcuts too. |
+| Chat status remains unknown | Status needs Claude command hooks; managed policy, disabled hooks or CLI compatibility can prevent events. The TUI does not override that policy. |
+| A search result is missing | Search reads saved text/Markdown, excludes tools/subagents and unsaved buffers, and reports skipped files and bounds in the popup. |
+| System rustc fails before compilation | run/install try an already installed rustup stable. A working toolchain is required; scripts do not repair system libraries or silently download a fallback. |
+
+## Support
+
+Use the [bug report](https://github.com/andrey-losikhin/claude-code-tui/issues/new?template=bug_report.yml)
+or [feature request](https://github.com/andrey-losikhin/claude-code-tui/issues/new?template=feature_request.yml)
+template. Include the commit, terminal/OS and a minimal reproduction with
+sanitized output. Report vulnerabilities via [SECURITY.md](SECURITY.md) and follow
+[CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md). See [CHANGELOG.md](CHANGELOG.md) for
+implemented changes; open proposals do not commit a release date.
 
 ## Local data
 

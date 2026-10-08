@@ -18,28 +18,46 @@ pub struct MouseLayout {
     pub project_offset: usize,
     pub session_offset: usize,
     pub picker: Option<(Rect, usize)>,
+    pub popup: Option<(Rect, usize)>,
 }
 
-pub fn chat_area(area: Rect) -> Rect {
-    let areas = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Min(3), Constraint::Length(1)])
-        .split(area);
-    let columns = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(32), Constraint::Percentage(68)])
-        .split(areas[0]);
-    columns[1]
-}
-
+#[cfg(test)]
 pub fn dialog_areas(area: Rect, show_note: bool) -> (Rect, Option<Rect>) {
-    let dialog = chat_area(area);
+    configured_dialog_areas(area, show_note, &crate::config::LayoutConfig::default())
+}
+fn columns(area: Rect, config: &crate::config::LayoutConfig) -> [Rect; 2] {
+    let body = Rect {
+        height: area.height.saturating_sub(1),
+        ..area
+    };
+    let split = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Percentage(if config.sidebar_hidden {
+                0
+            } else {
+                config.sidebar_percent.clamp(20, 65)
+            }),
+            Constraint::Min(0),
+        ])
+        .split(body);
+    [split[0], split[1]]
+}
+pub fn configured_dialog_areas(
+    area: Rect,
+    show_note: bool,
+    config: &crate::config::LayoutConfig,
+) -> (Rect, Option<Rect>) {
+    let dialog = columns(area, config)[1];
     if !show_note {
         return (dialog, None);
     }
     let split = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Percentage(55), Constraint::Percentage(45)])
+        .constraints([
+            Constraint::Percentage(config.chat_percent.clamp(20, 80)),
+            Constraint::Min(0),
+        ])
         .split(dialog);
     (split[0], Some(split[1]))
 }
@@ -62,15 +80,16 @@ pub fn render(
         .direction(Direction::Vertical)
         .constraints([Constraint::Min(3), Constraint::Length(1)])
         .split(frame.area());
-    let columns = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(32), Constraint::Percentage(68)])
-        .split(areas[0]);
+    let columns = columns(frame.area(), &app.layout());
     let left_areas = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Min(3), Constraint::Length(6)])
         .split(columns[0]);
-    let (chat_area, note_area) = dialog_areas(frame.area(), notes.is_visible());
+    let (chat_area, note_area) = configured_dialog_areas(
+        frame.area(),
+        notes.is_visible() && !app.maximized,
+        &app.layout(),
+    );
 
     let items: Vec<ListItem> = app
         .rows
@@ -93,11 +112,15 @@ pub fn render(
                 let open = open_sessions
                     .iter()
                     .find(|open_session| Some(open_session.id.as_str()) == session_id);
-                let icon = match open {
-                    Some(session) if session.active => "●",
-                    Some(session) if session.running => "◉",
-                    Some(_) => "×",
-                    None => "",
+                let icon = if session_id.is_some_and(|id| app.activity.unread.contains(id)) {
+                    "◆"
+                } else {
+                    match open {
+                        Some(session) if session.active => "●",
+                        Some(session) if session.running => "◉",
+                        Some(_) => "×",
+                        None => "",
+                    }
                 };
                 let icon_style = match open {
                     Some(session) if session.active || session.running => {
@@ -118,6 +141,14 @@ pub fn render(
                     Span::styled(pinned, theme.project_icon()),
                     Span::styled(note, theme.project_icon()),
                     Span::raw(app.display_title(*index)),
+                    Span::styled(
+                        if session_id.is_some_and(|id| app.activity.unread.contains(id)) {
+                            " ◆"
+                        } else {
+                            ""
+                        },
+                        theme.project_icon(),
+                    ),
                 ]))
             }
         })
@@ -152,7 +183,9 @@ pub fn render(
         open_sessions
             .iter()
             .map(|session| {
-                let (icon, style) = if session.active {
+                let (icon, style) = if app.activity.unread.contains(&session.id) {
+                    ("◆", theme.project_icon())
+                } else if session.active {
                     ("●", theme.session_icon(true))
                 } else if session.running {
                     ("◉", theme.session_icon(false))
@@ -167,6 +200,23 @@ pub fn render(
                             "✎ "
                         } else {
                             ""
+                        },
+                        theme.project_icon(),
+                    ),
+                    Span::styled(
+                        match app
+                            .activity
+                            .states
+                            .get(&session.id)
+                            .copied()
+                            .unwrap_or_default()
+                        {
+                            crate::events::Status::Unknown => "",
+                            crate::events::Status::Working => "⟳ ",
+                            crate::events::Status::Permission => "? ",
+                            crate::events::Status::Input => "… ",
+                            crate::events::Status::Ready => "✓ ",
+                            crate::events::Status::Error => "! ",
                         },
                         theme.project_icon(),
                     ),
@@ -213,7 +263,16 @@ pub fn render(
         ],
     };
     let chat_title = active_title
-        .map(|title| format!("Claude Code · {title}"))
+        .map(|title| {
+            format!(
+                "Claude Code · {} · {title}",
+                open_sessions
+                    .iter()
+                    .find(|session| session.active)
+                    .map(|session| app.activity.label(&session.id))
+                    .unwrap_or_default()
+            )
+        })
         .unwrap_or_else(|| "Чат".to_owned());
     let chat_widget = if active_title.is_some() {
         Paragraph::new(process_lines.to_vec())
@@ -229,6 +288,7 @@ pub fn render(
     frame.render_widget(chat, chat_area);
     if app.focused_panel == FocusPanel::Dialogue
         && !app.help_visible
+        && app.popup.is_none()
         && app.new_chat_dialog.is_none()
         && let Some((row, col)) = active_cursor
     {
@@ -268,7 +328,7 @@ pub fn render(
 
     if app.help_visible {
         let popup = centered_rect(86, 92, frame.area());
-        let help_lines = vec![
+        let mut help_lines = vec![
             Line::from("Alt+←/→/↑/↓ переход между панелями · мышь: клик и колесо"),
             Line::from("Alt+M/Ь открыть/скрыть заметку · Alt+↓ фокус nvim"),
             Line::from("В nvim :w сохранить · :wq закрыть · ✎ в списке означает заметку"),
@@ -286,6 +346,12 @@ pub fn render(
             Line::from(""),
             Line::from("Esc / ? закрыть · ↑/↓ прокрутка при узком окне"),
         ];
+        help_lines.splice(
+            0..0,
+            crate::commands::COMMANDS
+                .iter()
+                .map(|command| Line::from(format!("{} — {}", command.shortcut(), command.label))),
+        );
         app.help_scroll_limit = help_scroll_limit(popup, &help_lines);
         app.help_scroll = app.help_scroll.min(app.help_scroll_limit);
         let help = Paragraph::new(help_lines)
@@ -300,12 +366,42 @@ pub fn render(
         .new_chat_dialog
         .as_ref()
         .map(|dialog| render_new_chat(frame, dialog, theme));
+    let mut popup_layout = None;
+    if let Some(dialog) = &app.popup {
+        let popup = centered_rect(88, 80, frame.area());
+        frame.render_widget(Clear, popup);
+        let entries = dialog.filtered();
+        let items: Vec<ListItem> = entries
+            .iter()
+            .map(|entry| ListItem::new(entry.label.clone()))
+            .collect();
+        let mut state = ListState::default()
+            .with_selected(Some(dialog.selected.min(entries.len().saturating_sub(1))));
+        frame.render_stateful_widget(
+            List::new(items)
+                .highlight_style(theme.selected_row())
+                .block(
+                    Block::bordered()
+                        .border_style(theme.focused_border(true))
+                        .title(format!(
+                            "{}: {} · {} · Esc закрыть",
+                            dialog.title(),
+                            dialog.query,
+                            dialog.hint
+                        )),
+                ),
+            popup,
+            &mut state,
+        );
+        popup_layout = Some((popup, state.offset()));
+    }
     MouseLayout {
         projects: left_areas[0],
         sessions: left_areas[1],
         project_offset: list_state.offset(),
         session_offset: open_state.offset(),
         picker,
+        popup: popup_layout,
     }
 }
 
@@ -446,6 +542,27 @@ mod tests {
     use ratatui::style::Modifier;
     use std::path::PathBuf;
 
+    #[test]
+    fn saved_layout_clamps_and_hides_without_overlapping_panels() {
+        let bounds = Rect::new(0, 0, 150, 40);
+        let mut config = crate::config::LayoutConfig {
+            sidebar_percent: 99,
+            chat_percent: 0,
+            sidebar_hidden: false,
+        };
+        let (chat, note) = configured_dialog_areas(bounds, true, &config);
+        assert!(chat.x < 100 && chat.x > 90);
+        assert!(chat.height >= 7);
+        assert_eq!(chat.bottom(), note.unwrap().y);
+        config.sidebar_hidden = true;
+        assert_eq!(configured_dialog_areas(bounds, false, &config).0.width, 150);
+        for (width, height) in [(0, 0), (1, 1), (20, 5)] {
+            let area = Rect::new(0, 0, width, height);
+            let (chat, note) = configured_dialog_areas(area, true, &config);
+            assert!(chat.right() <= width);
+            assert!(note.unwrap().bottom() <= height);
+        }
+    }
     #[test]
     fn note_split_is_below_chat_and_preserves_dialog_bounds() {
         for (width, height) in [(120, 40), (40, 12), (10, 3)] {
