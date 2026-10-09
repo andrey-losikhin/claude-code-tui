@@ -92,3 +92,20 @@ one registry. Search reads only saved message text and Markdown in a cancellable
 worker with explicit bounds, keeping snippets in memory. Note append operations
 use the running editor buffer when present. Layout percentages live in XDG
 config; maximizing is temporary and does not replace saved proportions.
+
+## Named workspace lifecycle
+
+`saved_workspaces.rs` stores bounded named snapshots in the existing private XDG
+configuration: chat UUID/project/title/transcript references, active UUID, visible
+notes, model override, focus and layout. No transcript or editor-buffer copies are
+stored. Configuration failures roll back in-memory snapshot edits.
+
+The manager uses the shared popup routing and Alt+O/Щ registry action. Closing or
+restoring is confirmed first, then waits for all Neovim editors to complete
+`:confirm qall`. CLI PTYs are stopped only after that barrier. Global focus keys
+cancel the pending action; quitting cancels it before requesting application exit.
+Restore preflights directories/UUIDs, launches CLI PTYs with resume for existing
+transcripts (session-id for fresh chats), reopens notes and selects the saved UUID.
+Partial launch failures leave the snapshot available and report individual errors.
+Three mouse dividers persist sidebar width, left-panel split and chat/note split;
+a zero left split retains the previous six-row open-chats layout for old configs.

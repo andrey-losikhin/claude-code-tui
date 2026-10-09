@@ -3,6 +3,7 @@ use std::path::PathBuf;
 
 #[derive(Clone, Debug)]
 pub enum Target {
+    Workspace(crate::saved_workspaces::Action),
     Command(char),
     Chat(String, PathBuf),
     Note(String, PathBuf),
@@ -21,6 +22,8 @@ pub struct Entry {
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kind {
+    Workspaces,
+    WorkspaceName,
     Commands,
     Switcher,
     Search,
@@ -45,6 +48,8 @@ impl Popup {
     }
     pub fn title(&self) -> &'static str {
         match self.kind {
+            Kind::Workspaces => "Менеджер сессий",
+            Kind::WorkspaceName => "Название сессии",
             Kind::Commands => "Команды",
             Kind::Switcher => "Переключить чат",
             Kind::Search => "Поиск сообщений и заметок",
@@ -76,6 +81,11 @@ impl Popup {
             KeyCode::Down => self.selected = (self.selected + 1).min(count.saturating_sub(1)),
             KeyCode::Up => self.selected = self.selected.saturating_sub(1),
             KeyCode::Enter => {
+                if self.kind == Kind::WorkspaceName {
+                    return Some(Target::Workspace(crate::saved_workspaces::Action::Name(
+                        self.query.clone(),
+                    )));
+                }
                 return self
                     .filtered()
                     .get(self.selected)

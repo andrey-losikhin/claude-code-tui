@@ -31,6 +31,12 @@ format. Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Added
 
+- Named workspace manager (Alt+O/Щ): save/update, restore, rename, delete and
+  close sets of chats with Neovim unsaved-buffer confirmation. History and notes
+  remain intact when a snapshot is removed.
+- Compact 1…4 number labels on panel titles and a draggable projects/open-chats divider;
+  all three pane proportions are persisted and included in workspace snapshots.
+
 - Global Alt+1…4 panel selection before CLI/editor/modal input, with scoped
   Ghostty/Kitty launcher overrides preventing terminal tab-key interception.
 

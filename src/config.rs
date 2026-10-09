@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 pub struct LayoutConfig {
     pub sidebar_percent: u16,
     pub chat_percent: u16,
+    pub projects_percent: u16,
     #[serde(default)]
     pub sidebar_hidden: bool,
 }
@@ -18,12 +19,15 @@ impl Default for LayoutConfig {
         Self {
             sidebar_percent: 32,
             chat_percent: 55,
+            projects_percent: 0,
             sidebar_hidden: false,
         }
     }
 }
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct UserConfig {
+    #[serde(default)]
+    pub workspaces: Vec<crate::saved_workspaces::Snapshot>,
     #[serde(default)]
     pub projects: BTreeSet<PathBuf>,
     #[serde(default)]

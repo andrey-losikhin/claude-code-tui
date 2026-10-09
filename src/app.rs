@@ -13,7 +13,7 @@ pub enum SidebarRow {
     Session(usize),
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum FocusPanel {
     Projects,
     Dialogue,
@@ -62,6 +62,37 @@ pub struct App {
 }
 
 impl App {
+    pub fn workspaces(&self) -> &[crate::saved_workspaces::Snapshot] {
+        &self.config.workspaces
+    }
+    pub fn store_workspaces(&mut self, items: Vec<crate::saved_workspaces::Snapshot>) -> bool {
+        let previous = std::mem::replace(&mut self.config.workspaces, items);
+        if !self.save_config() {
+            self.config.workspaces = previous;
+            return false;
+        }
+        true
+    }
+    pub fn saved_layout(&self) -> crate::config::LayoutConfig {
+        self.config.layout.clone()
+    }
+    pub fn workspace_model(&self) -> Option<String> {
+        self.current_model()
+    }
+    pub fn apply_workspace(
+        &mut self,
+        snapshot: &crate::saved_workspaces::Snapshot,
+    ) -> Option<String> {
+        self.config.layout = snapshot.layout.clone();
+        self.config.selected_model = snapshot.model.clone();
+        self.maximized = snapshot.maximized;
+        self.focused_panel = snapshot.focus;
+        if self.save_config() {
+            None
+        } else {
+            Some(self.status.clone())
+        }
+    }
     pub fn layout(&self) -> crate::config::LayoutConfig {
         let mut layout = self.config.layout.clone();
         layout.sidebar_percent = layout.sidebar_percent.clamp(20, 65);
@@ -81,6 +112,9 @@ impl App {
     }
     pub fn save_layout(&mut self) {
         self.save_config();
+    }
+    pub fn resize_projects(&mut self, value: u16) {
+        self.config.layout.projects_percent = value.clamp(20, 85);
     }
     pub fn show_sidebar(&mut self) {
         self.maximized = false;

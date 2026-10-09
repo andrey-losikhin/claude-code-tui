@@ -34,6 +34,11 @@ pub fn numbered_panel(key: &crossterm::event::KeyEvent) -> Option<crate::app::Fo
 }
 pub const COMMANDS: &[Command] = &[
     Command {
+        key: 'o',
+        russian: 'щ',
+        label: "Менеджер рабочих сессий",
+    },
+    Command {
         key: '1',
         russian: '1',
         label: "Панель проектов",

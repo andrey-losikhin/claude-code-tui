@@ -87,6 +87,7 @@ existing terminal/window-manager bindings can still intercept them.
 | `Alt+1 / 2 / 3 / 4` | Projects / dialogue / open sessions / note (creates or shows it) |
 | `Alt+←/→/↑/↓` | Move between panels according to their position |
 | `Alt+N` / `Alt+Т` | New chat: select a project directory |
+| `Alt+O` / `Alt+Щ` | Named workspace session manager |
 | `Alt+S` / `Alt+Ы` | Fuzzy switcher: open and recent chats |
 | `Alt+J` / `Alt+О` | Return to the previous chat |
 | `Alt+K` / `Alt+Л` | Searchable command palette |
@@ -112,8 +113,24 @@ existing terminal/window-manager bindings can still intercept them.
 
 Popups use typing to filter, `↑/↓` to select, `Enter` or a mouse click to open,
 `Esc` to cancel. Global keys remain available inside them. Drag the vertical
-sidebar border or the horizontal chat/note border to resize; proportions persist.
+sidebar border, the projects/open-chats border or the chat/note border to resize;
+proportions persist. Panel titles show numbers 1…4; use Alt with the number to focus a panel.
 The palette uses the same action registry as the shortcuts popup.
+
+### Saved workspaces
+
+Alt+O opens the manager from Claude, Neovim or a sidebar. Save a named set of
+open chats, the active chat, visible notes, model override and pane layout.
+Select a saved name to restore, rename or delete its snapshot. The manager also
+updates the current snapshot and offers save-and-close or close without updating.
+Closing or restoring asks for confirmation because running CLI jobs will stop.
+Dirty note editors use Neovim's save/discard/cancel dialog; Alt+arrows cancels the
+pending workspace operation. Restore restarts CLI processes with their UUIDs and
+saved histories; it does not suspend or recover a running task or unsent input.
+Chats with no saved transcript start with their existing UUID. Missing project
+directories are reported before current chats are closed. Launch failures are
+reported, and the snapshot remains available for retry. Deleting a snapshot does
+not delete Claude history or Markdown notes. Snapshots are local XDG config data.
 
 Status comes from additive command hooks supplied to each CLI via `--settings`.
 The TUI never emits permission decisions or writes your Claude settings. If hooks
