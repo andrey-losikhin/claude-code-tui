@@ -83,7 +83,14 @@ pub fn render(
     let columns = columns(frame.area(), &app.layout());
     let left_areas = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Min(3), Constraint::Length(6)])
+        .constraints(if app.layout().projects_percent == 0 {
+            [Constraint::Min(3), Constraint::Length(6)]
+        } else {
+            [
+                Constraint::Percentage(app.layout().projects_percent.clamp(20, 85)),
+                Constraint::Min(3),
+            ]
+        })
         .split(columns[0]);
     let (chat_area, note_area) = configured_dialog_areas(
         frame.area(),
@@ -170,7 +177,7 @@ pub fn render(
             Block::bordered()
                 .border_style(theme.focused_border(app.focused_panel == FocusPanel::Projects))
                 .title_style(theme.focused_title(app.focused_panel == FocusPanel::Projects))
-                .title(sidebar_title),
+                .title(format!("1 · {sidebar_title}")),
         );
     frame.render_stateful_widget(sidebar, left_areas[0], &mut list_state);
 
@@ -233,7 +240,7 @@ pub fn render(
             Block::bordered()
                 .title_style(theme.focused_title(app.focused_panel == FocusPanel::OpenSessions))
                 .border_style(theme.focused_border(app.focused_panel == FocusPanel::OpenSessions))
-                .title("Открытые чаты · ↑/↓ выбрать"),
+                .title("3 · Открытые чаты · ↑/↓ выбрать"),
         );
     frame.render_stateful_widget(open_list, left_areas[1], &mut open_state);
 
@@ -283,7 +290,7 @@ pub fn render(
         Block::bordered()
             .border_style(theme.focused_border(app.focused_panel == FocusPanel::Dialogue))
             .title_style(theme.focused_title(app.focused_panel == FocusPanel::Dialogue))
-            .title(chat_title),
+            .title(format!("2 · {chat_title}")),
     );
     frame.render_widget(chat, chat_area);
     if app.focused_panel == FocusPanel::Dialogue
@@ -305,7 +312,7 @@ pub fn render(
         frame.render_widget(
             Paragraph::new(notes.lines()).block(
                 Block::bordered()
-                    .title(title)
+                    .title(format!("4 · {title}"))
                     .title_style(theme.focused_title(app.focused_panel == FocusPanel::Notes))
                     .border_style(theme.focused_border(app.focused_panel == FocusPanel::Notes)),
             ),
@@ -548,6 +555,7 @@ mod tests {
         let mut config = crate::config::LayoutConfig {
             sidebar_percent: 99,
             chat_percent: 0,
+            projects_percent: 85,
             sidebar_hidden: false,
         };
         let (chat, note) = configured_dialog_areas(bounds, true, &config);

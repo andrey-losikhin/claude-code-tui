@@ -272,6 +272,10 @@ impl NotesManager {
         self.exit_requested = false;
     }
 
+    pub fn visible_ids(&self) -> Vec<String> {
+        self.visible.iter().cloned().collect()
+    }
+
     pub fn request_exit(&mut self) -> io::Result<bool> {
         self.exit_requested = true;
         let running = self.editors.running_ids();

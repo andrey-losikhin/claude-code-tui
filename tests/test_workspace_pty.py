@@ -119,7 +119,7 @@ os.execv('/usr/bin/nvim',['nvim','--clean','-i','NONE','-n',*sys.argv[1:]])
         tui.wait(lambda: json.loads(config.read_text())['layout']['sidebar_hidden'])
         tui.send(b'\x1bu')
         tui.send(b'\x1bd')
-        tui.wait(lambda: screen(tui)[0].startswith('┌Claude Code') and 'Проекты' not in screen(tui)[0])
+        tui.wait(lambda: screen(tui)[0].startswith('┌2 · Claude Code') and 'Проекты' not in screen(tui)[0])
         tui.send(b'\x1bd')
         tui.wait(lambda: 'Проекты' in screen(tui)[0])
         # Create an unsaved nvim buffer, then append selection without overwriting it.

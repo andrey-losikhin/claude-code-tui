@@ -5,6 +5,7 @@ mod events;
 mod new_chat;
 mod notes;
 mod pty;
+mod saved_workspaces;
 mod search;
 mod sessions;
 mod theme;
@@ -57,6 +58,7 @@ fn main() -> io::Result<()> {
     };
     processes.hook_settings = bridge.as_ref().map(|bridge| bridge.settings.clone());
     let mut notes = notes::NotesManager::default();
+    let mut workspace_manager = saved_workspaces::Manager::default();
     let mut output_viewer = pty::PtyManager::default();
     let mut output_snapshot: Option<OutputSnapshot> = None;
     let mut chat_selection_enabled = true;
@@ -64,7 +66,7 @@ fn main() -> io::Result<()> {
     let search_worker = search::SearchWorker::new();
     let mut search_query_sent = String::new();
     let mut selected_fragment: Option<String> = None;
-    let mut layout_drag: Option<bool> = None;
+    let mut layout_drag: Option<u8> = None;
     let mut previous_chat: Option<String> = None;
     let mut tracked_chat: Option<String> = None;
     let notifier = events::Notifier::new();
@@ -124,8 +126,16 @@ fn main() -> io::Result<()> {
         }
         app.poll_history(&processes.open_sessions());
         processes.sync_titles(|id| app.title_for_id(id).map(str::to_owned));
+        workspace_manager.cancel_if_needed(&notes);
         if notes.sync(processes.active_id()) {
-            app.should_quit = true;
+            if !workspace_manager.finish(
+                &mut app,
+                &mut processes,
+                &mut notes,
+                terminal.size()?.into(),
+            ) {
+                app.should_quit = true;
+            }
             continue;
         }
         if app.focused_panel == FocusPanel::Notes && !notes.is_visible() {
@@ -194,9 +204,8 @@ fn main() -> io::Result<()> {
         let mut mouse_layout = ui::MouseLayout::default();
         terminal.draw(|frame| {
             if output_viewer.active_id().is_some() {
-                let block = ratatui::widgets::Block::bordered().title(
-                    "Вывод активного чата · :q / Alt+B вернуться · мышью выделить и скопировать",
-                );
+                let block = ratatui::widgets::Block::bordered()
+                    .title("2 · Вывод активного чата · :q / Alt+B вернуться");
                 frame.render_widget(
                     ratatui::widgets::Paragraph::new(output_viewer.active_lines()).block(block),
                     bounds,
@@ -225,6 +234,7 @@ fn main() -> io::Result<()> {
             {
                 processes.clear_selection();
                 output_viewer.clear_selection();
+                workspace_manager.cancel_from_editor_key(key, &app, &mut notes);
             }
             if let Event::Key(key) = &input
                 && let Some(panel) = commands::numbered_panel(key)
@@ -294,6 +304,16 @@ fn main() -> io::Result<()> {
                 if let Some(target) = chosen {
                     app.popup = None;
                     match target {
+                        workspace::Target::Workspace(action) => {
+                            workspace_manager.handle(
+                                action,
+                                &mut app,
+                                &mut processes,
+                                &mut notes,
+                                bounds,
+                            );
+                            continue;
+                        }
                         workspace::Target::Command(character) => {
                             if character == '\0' { /* Keep the original Alt arrow event. */
                             } else {
@@ -411,6 +431,12 @@ fn main() -> io::Result<()> {
                     continue;
                 }
                 match shortcut {
+                    'o' => {
+                        notes.cancel_exit();
+                        workspace_manager.cancel_pending();
+                        workspace_manager.open(&mut app);
+                        continue;
+                    }
                     'u' => {
                         app.toggle_sidebar();
                         continue;
@@ -655,25 +681,40 @@ fn main() -> io::Result<()> {
                             && (mouse.column == chat_area.x
                                 || mouse.column.saturating_add(1) == chat_area.x)
                         {
-                            layout_drag = Some(true);
+                            layout_drag = Some(0);
+                            app.status =
+                                "Ширина панелей · перетащите границу · отпустите для сохранения"
+                                    .into();
+                            continue;
+                        }
+                        if !app.layout().sidebar_hidden
+                            && mouse.column < chat_area.x
+                            && (mouse.row == mouse_layout.sessions.y
+                                || mouse.row.saturating_add(1) == mouse_layout.sessions.y)
+                        {
+                            layout_drag = Some(2);
+                            app.status =
+                                "Размер панелей · перетащите границу · отпустите для сохранения"
+                                    .into();
                             continue;
                         }
                         if note_area.is_some_and(|area| {
                             mouse.column >= area.x
                                 && (mouse.row == area.y || mouse.row.saturating_add(1) == area.y)
                         }) {
-                            layout_drag = Some(false);
+                            layout_drag = Some(1);
+                            app.status = "Высота чата/заметки · перетащите границу · отпустите для сохранения".into();
                             continue;
                         }
                     }
-                    if let Some(sidebar) = layout_drag
+                    if let Some(divider) = layout_drag
                         && matches!(
                             mouse.kind,
                             MouseEventKind::Drag(MouseButton::Left)
                                 | MouseEventKind::Up(MouseButton::Left)
                         )
                     {
-                        if sidebar {
+                        if divider == 0 {
                             app.resize_layout(
                                 Some(
                                     ((u32::from(mouse.column) * 100)
@@ -681,6 +722,12 @@ fn main() -> io::Result<()> {
                                         as u16,
                                 ),
                                 None,
+                            );
+                        } else if divider == 2 {
+                            app.resize_projects(
+                                ((u32::from(mouse.row.saturating_sub(bounds.y)) * 100)
+                                    / u32::from(bounds.height.saturating_sub(1).max(1)))
+                                    as u16,
                             );
                         } else {
                             app.resize_layout(
@@ -752,6 +799,7 @@ fn main() -> io::Result<()> {
                     && key.modifiers == KeyModifiers::ALT
                     && app::App::shortcut_character(character) == 'q'
                 {
+                    workspace_manager.cancel_pending();
                     request_app_exit(&mut app, &mut notes);
                 } else if matches!(key.code, KeyCode::Char(character) if app::App::shortcut_character(character) == 'x')
                     && key.modifiers == KeyModifiers::ALT
