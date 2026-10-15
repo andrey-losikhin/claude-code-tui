@@ -11,6 +11,8 @@ use crate::sessions::{self, Session};
 pub enum SidebarRow {
     Project(PathBuf),
     Session(usize),
+    ShowMore(PathBuf),
+    ShowLess(PathBuf),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -54,6 +56,7 @@ pub struct App {
     pub help_visible: bool,
     pub help_scroll: u16,
     pub help_scroll_limit: u16,
+    shown_chats: HashMap<PathBuf, usize>,
     config: UserConfig,
     rename_session_id: Option<String>,
     config_writable: bool,
@@ -134,6 +137,7 @@ impl App {
         self.save_config();
     }
     pub fn collapse_all(&mut self) {
+        self.shown_chats.clear();
         self.collapsed_projects.extend(
             self.sessions
                 .iter()
@@ -218,6 +222,7 @@ impl App {
             help_visible: false,
             help_scroll: 0,
             help_scroll_limit: 0,
+            shown_chats: HashMap::new(),
             config,
             rename_session_id: None,
             config_writable,
@@ -257,6 +262,11 @@ impl App {
         preserve_status: bool,
         request_history: bool,
     ) {
+        let selected_control = self
+            .selected_row
+            .and_then(|index| self.rows.get(index))
+            .filter(|row| matches!(row, SidebarRow::ShowMore(_) | SidebarRow::ShowLess(_)))
+            .cloned();
         let active_id = self
             .selected_session
             .and_then(|index| self.sessions.get(index))
@@ -268,14 +278,16 @@ impl App {
                 SidebarRow::Session(index) => {
                     self.sessions.get(*index).map(|session| session.id.clone())
                 }
-                SidebarRow::Project(_) => None,
+                _ => None,
             });
         let selected_project = self
             .selected_row
             .and_then(|index| self.rows.get(index))
             .and_then(|row| match row {
-                SidebarRow::Project(path) => Some(path.clone()),
-                SidebarRow::Session(_) => None,
+                SidebarRow::Project(path)
+                | SidebarRow::ShowMore(path)
+                | SidebarRow::ShowLess(path) => Some(path.clone()),
+                _ => None,
             });
         let mut project_hints: HashMap<String, PathBuf> = self.config.session_projects.clone();
         for session in &self.sessions {
@@ -382,7 +394,7 @@ impl App {
                 .iter()
                 .position(|row| match row {
                     SidebarRow::Session(index) => self.sessions[*index].id == id,
-                    SidebarRow::Project(_) => false,
+                    _ => false,
                 })
                 .or(self.selected_row);
         }
@@ -391,6 +403,13 @@ impl App {
                 .rows
                 .iter()
                 .position(|row| matches!(row, SidebarRow::Project(row_path) if row_path == &path));
+        }
+        if let Some(row) = selected_control {
+            self.selected_row = self
+                .rows
+                .iter()
+                .position(|item| item == &row)
+                .or(self.selected_row);
         }
     }
 
@@ -535,6 +554,14 @@ impl App {
         self.refresh_rows();
     }
 
+    pub fn hidden_chats(&self, project: &Path) -> usize {
+        self.sessions
+            .iter()
+            .filter(|session| session.project_path == project)
+            .count()
+            .saturating_sub(*self.shown_chats.get(project).unwrap_or(&10))
+    }
+
     fn refresh_rows(&mut self) {
         let previous_selection = self
             .selected_row
@@ -589,8 +616,24 @@ impl App {
         for (project_path, session_indices) in groups {
             self.rows.push(SidebarRow::Project(project_path.clone()));
             if !self.collapsed_projects.contains(&project_path) || !query.is_empty() {
-                self.rows
-                    .extend(session_indices.into_iter().map(SidebarRow::Session));
+                let total = session_indices.len();
+                let limit = if query.is_empty() {
+                    *self.shown_chats.get(&project_path).unwrap_or(&10)
+                } else {
+                    total
+                };
+                self.rows.extend(
+                    session_indices
+                        .into_iter()
+                        .take(limit)
+                        .map(SidebarRow::Session),
+                );
+                if total > limit {
+                    self.rows.push(SidebarRow::ShowMore(project_path.clone()));
+                }
+                if query.is_empty() && limit > 10 && total > 10 {
+                    self.rows.push(SidebarRow::ShowLess(project_path));
+                }
             }
         }
 
@@ -630,7 +673,9 @@ impl App {
 
     fn selected_project_path(&self) -> Option<PathBuf> {
         match self.selected_row.and_then(|index| self.rows.get(index))? {
-            SidebarRow::Project(path) => Some(path.clone()),
+            SidebarRow::Project(path) | SidebarRow::ShowMore(path) | SidebarRow::ShowLess(path) => {
+                Some(path.clone())
+            }
             SidebarRow::Session(index) => self
                 .sessions
                 .get(*index)
@@ -643,6 +688,7 @@ impl App {
             return;
         };
         if collapsed {
+            self.shown_chats.remove(&project_path);
             self.collapsed_projects.insert(project_path.clone());
         } else {
             self.collapsed_projects.remove(&project_path);
@@ -664,7 +710,29 @@ impl App {
             .and_then(|index| self.rows.get(index))
             .cloned()
         {
+            Some(SidebarRow::ShowMore(path)) => {
+                let first_new = self.selected_row;
+                let count = self.shown_chats.entry(path).or_insert(10);
+                *count = count.saturating_add(10);
+                self.refresh_rows();
+                self.selected_row = first_new.filter(|index| *index < self.rows.len());
+                if let Some(SidebarRow::Session(index)) =
+                    self.selected_row.and_then(|index| self.rows.get(index))
+                {
+                    self.selected_session = Some(*index);
+                }
+                None
+            }
+            Some(SidebarRow::ShowLess(path)) => {
+                self.shown_chats.remove(&path);
+                self.refresh_rows();
+                self.selected_row = self.rows.iter().position(
+                    |row| matches!(row, SidebarRow::Project(project) if project == &path),
+                );
+                None
+            }
             Some(SidebarRow::Project(path)) => {
+                self.shown_chats.remove(&path);
                 if self.collapsed_projects.contains(&path) {
                     self.collapsed_projects.remove(&path);
                 } else {
@@ -687,6 +755,7 @@ impl App {
         let selected_row = self.selected_row.and_then(|index| self.rows.get(index))?;
         let index = match selected_row {
             SidebarRow::Session(index) => *index,
+            SidebarRow::ShowMore(_) | SidebarRow::ShowLess(_) => return None,
             SidebarRow::Project(path) => self
                 .selected_session
                 .filter(|index| {
@@ -763,6 +832,7 @@ impl App {
                     .get(*index)
                     .is_some_and(|session| &session.project_path == path)
             }),
+            Some(SidebarRow::ShowMore(_) | SidebarRow::ShowLess(_)) => None,
             None => self.selected_session,
         };
         let Some(index) = selected_index else {
@@ -838,6 +908,7 @@ impl App {
                     .get(*index)
                     .is_some_and(|session| &session.project_path == path)
             }),
+            Some(SidebarRow::ShowMore(_) | SidebarRow::ShowLess(_)) => None,
             None => self.selected_session,
         };
         let Some(id) = selected_index

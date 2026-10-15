@@ -114,6 +114,20 @@ pub fn render(
                     Span::styled(project_name(path), theme.project_heading()),
                 ]))
             }
+            SidebarRow::ShowMore(path) => {
+                let remaining = app.hidden_chats(path);
+                ListItem::new(Line::from(Span::styled(
+                    format!(
+                        "    … Показать ещё {} · осталось {remaining}",
+                        remaining.min(10)
+                    ),
+                    theme.project_icon(),
+                )))
+            }
+            SidebarRow::ShowLess(_) => ListItem::new(Line::from(Span::styled(
+                "    ▴ Показать меньше",
+                theme.project_icon(),
+            ))),
             SidebarRow::Session(index) => {
                 let session_id = app.sessions.get(*index).map(|session| session.id.as_str());
                 let open = open_sessions

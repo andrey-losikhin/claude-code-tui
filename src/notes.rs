@@ -246,6 +246,10 @@ impl NotesManager {
         self.editors.active_cursor()
     }
 
+    pub fn cursor_style(&self) -> crossterm::cursor::SetCursorStyle {
+        self.editors.active_cursor_style()
+    }
+
     pub fn active_path(&self) -> Option<PathBuf> {
         self.editors
             .active_id()
