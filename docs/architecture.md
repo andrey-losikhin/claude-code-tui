@@ -58,6 +58,11 @@ older TUI-local override. Local titles otherwise stay in the TUI configuration.
 
 Exact Alt shortcuts belong to the TUI; modified native CLI keys are encoded for
 the PTY. Keyboard enhancement and paste/mouse modes are restored on exit.
+A typed vt100 callback retains only valid DECSCUSR cursor shapes per child PTY.
+After rendering, the outer terminal receives the focused child's shape through
+Crossterm; modal/sidebar focus and exit restore the terminal default. No raw child
+escape sequences are replayed. Super+Space events are consumed before modal and
+child routing because desktop layout switching may also deliver an enhanced key.
 Mouse coordinates are translated to child viewport coordinates. Alt+1…4 panel
 selection precedes modals, the output viewer and both child input paths. Scoped
 launcher overrides make Ghostty/Kitty tab bindings deliver panel keys; direct

@@ -7,6 +7,11 @@ format. Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Fixed
 
+- Preserve child DECSCUSR cursor shapes per PTY and apply the focused editor/CLI
+  shape; reset the terminal default on focus changes and exit.
+- Ignore desktop Super+Space layout switching in TUI input instead of forwarding
+  it to Neovim as `<D-Space>` or inserting a space in a popup.
+
 - Continuous PTY output has a bounded per-frame parsing budget; active chats
   render first and background queues are serviced fairly without dropping data.
 - Adjacent terminal cells with identical styling share text spans to reduce
@@ -30,6 +35,9 @@ format. Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 - English and Russian feature/control documentation is synchronized.
 
 ### Added
+
+- Project folders initially show 10 chats with mouse/Enter “Show more” batches
+  and “Show less”. Collapsing resets the batch; sidebar search reveals all matches.
 
 - Named workspace manager (Alt+O/Щ): save/update, restore, rename, delete and
   close sets of chats with Neovim unsaved-buffer confirmation. History and notes

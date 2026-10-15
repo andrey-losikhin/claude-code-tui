@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver};
 use std::thread;
 
+use crossterm::cursor::SetCursorStyle;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use portable_pty::{Child, CommandBuilder, MasterPty, PtySize, native_pty_system};
 use ratatui::layout::Rect;
@@ -18,8 +19,49 @@ struct ManagedSession {
     writer: Box<dyn Write + Send>,
     child: Box<dyn Child + Send + Sync>,
     output: Receiver<Vec<u8>>,
-    parser: Parser,
+    parser: Parser<CursorState>,
     stopped: Option<String>,
+}
+
+struct CursorState {
+    style: SetCursorStyle,
+}
+impl Default for CursorState {
+    fn default() -> Self {
+        Self {
+            style: SetCursorStyle::DefaultUserShape,
+        }
+    }
+}
+impl vt100::Callbacks for CursorState {
+    fn unhandled_csi(
+        &mut self,
+        _: &mut vt100::Screen,
+        first: Option<u8>,
+        second: Option<u8>,
+        params: &[&[u16]],
+        command: char,
+    ) {
+        // DECSCUSR: retain only cursor shape, never replay arbitrary child output.
+        if first != Some(b' ')
+            || second.is_some()
+            || command != 'q'
+            || params.len() > 1
+            || params.first().is_some_and(|p| p.len() > 1)
+        {
+            return;
+        }
+        self.style = match params.first().and_then(|p| p.first()).copied().unwrap_or(0) {
+            0 => SetCursorStyle::DefaultUserShape,
+            1 => SetCursorStyle::BlinkingBlock,
+            2 => SetCursorStyle::SteadyBlock,
+            3 => SetCursorStyle::BlinkingUnderScore,
+            4 => SetCursorStyle::SteadyUnderScore,
+            5 => SetCursorStyle::BlinkingBar,
+            6 => SetCursorStyle::SteadyBar,
+            _ => return,
+        };
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -298,7 +340,7 @@ impl PtyManager {
                 writer,
                 child,
                 output,
-                parser: Parser::new(rows, cols, 2_000),
+                parser: Parser::new_with_callbacks(rows, cols, 2_000, CursorState::default()),
                 stopped: None,
             },
         );
@@ -347,6 +389,14 @@ impl PtyManager {
         } else {
             Some(screen.cursor_position())
         }
+    }
+
+    pub fn active_cursor_style(&self) -> SetCursorStyle {
+        self.active
+            .as_ref()
+            .and_then(|id| self.sessions.get(id))
+            .map(|session| session.parser.callbacks().style)
+            .unwrap_or(SetCursorStyle::DefaultUserShape)
     }
 
     pub fn cycle(&mut self, reverse: bool) -> bool {

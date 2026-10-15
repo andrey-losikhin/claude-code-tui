@@ -111,11 +111,26 @@ existing terminal/window-manager bindings can still intercept them.
 | `r` in open sessions | Rename the selected running chat |
 | `?` in the sidebar | Show help |
 
+Expanded project folders initially show up to 10 chats in the existing pinned/
+recent order. Select “Показать ещё” with Enter or click it to reveal the next 10;
+“Показать меньше” returns to the first 10. Collapsing a project resets its limit.
+Sidebar search shows all matching chats, regardless of this limit. Alt+Z/Я
+collapses every project and resets the expanded batches. The sidebar itself
+continues to scroll with arrows or the mouse wheel.
+
 Popups use typing to filter, `↑/↓` to select, `Enter` or a mouse click to open,
 `Esc` to cancel. Global keys remain available inside them. Drag the vertical
 sidebar border, the projects/open-chats border or the chat/note border to resize;
 proportions persist. Panel titles show numbers 1…4; use Alt with the number to focus a panel.
 The palette uses the same action registry as the shortcuts popup.
+
+Neovim cursor shapes follow its `guicursor` setting, including block/bar changes
+between Normal and Insert modes. Shape changes are tracked per child PTY and
+restored when focus changes; the terminal default is restored on TUI exit. A
+terminal supporting DECSCUSR is required. If your Neovim config disables
+`guicursor`, it will not request mode-specific shapes. Super+Space is reserved
+for desktop keyboard-layout switching and is ignored by TUI input, so it cannot
+insert `<D-Space>` into notes or prompts. Other modified keys remain forwarded.
 
 ### Saved workspaces
 

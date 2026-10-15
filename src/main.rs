@@ -12,6 +12,7 @@ mod theme;
 mod ui;
 mod workspace;
 
+use crossterm::cursor::SetCursorStyle;
 use std::io;
 
 use app::{AppAction, FocusPanel};
@@ -62,6 +63,7 @@ fn main() -> io::Result<()> {
     let mut output_viewer = pty::PtyManager::default();
     let mut output_snapshot: Option<OutputSnapshot> = None;
     let mut chat_selection_enabled = true;
+    let mut last_cursor_style = None;
 
     let search_worker = search::SearchWorker::new();
     let mut search_query_sent = String::new();
@@ -227,8 +229,29 @@ fn main() -> io::Result<()> {
             );
         })?;
 
+        let cursor_style = if app.popup.is_some() || app.help_visible || app.input_active() {
+            SetCursorStyle::DefaultUserShape
+        } else if output_viewer.active_id().is_some() {
+            output_viewer.active_cursor_style()
+        } else {
+            match app.focused_panel {
+                FocusPanel::Notes if notes.is_visible() && !app.maximized => notes.cursor_style(),
+                FocusPanel::Dialogue => processes.active_cursor_style(),
+                _ => SetCursorStyle::DefaultUserShape,
+            }
+        };
+        if last_cursor_style != Some(cursor_style) {
+            crossterm::execute!(io::stdout(), cursor_style)?;
+            last_cursor_style = Some(cursor_style);
+        }
+
         if event::poll(Duration::from_millis(16))? {
             let mut input = event::read()?;
+            // Desktop layout switching can also arrive through enhanced keyboard input.
+            if matches!(&input, Event::Key(key) if key.code == KeyCode::Char(' ') && key.modifiers == KeyModifiers::SUPER)
+            {
+                continue;
+            }
             if let Event::Key(key) = &input
                 && matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat)
             {
@@ -1230,7 +1253,8 @@ impl Drop for TerminalRestoreGuard {
         let _ = crossterm::execute!(
             io::stdout(),
             DisableMouseCapture,
-            event::DisableBracketedPaste
+            event::DisableBracketedPaste,
+            SetCursorStyle::DefaultUserShape
         );
         let _ = ratatui::try_restore();
     }
